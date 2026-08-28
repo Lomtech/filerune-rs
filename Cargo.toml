@@ -1,0 +1,40 @@
+[package]
+name = "filerune"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Tastaturgetriebener Finder-Ersatz — die Rust-Fassung von FileRune"
+
+[dependencies]
+# x11/wayland sind auf Nicht-Linux wirkungslos, ohne sie hat winit dort aber
+# gar kein Fenster-Backend und bricht mit compile_error! ab.
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts", "wgpu", "x11", "wayland",
+] }
+egui = "0.36"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+trash = "5"
+arboard = "3"
+walkdir = "2"
+
+[target.'cfg(windows)'.build-dependencies]
+# Hängt icon.ico an die .exe.
+embed-resource = "3"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Echte Finder-Icons und SF Symbols kommen aus AppKit. objc2 ist reines Rust —
+# eframe zieht objc2-app-kit ohnehin schon in den Abhängigkeitsbaum. Muss ans
+# Target gebunden sein: objc2 bricht auf Nicht-Apple-Zielen mit compile_error! ab.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep",
+    "NSGraphicsContext", "NSResponder", "NSView", "NSApplication", "NSColor", "NSColorSpace",
+    "objc2-uniform-type-identifiers",
+] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSGeometry", "NSArray"] }
+objc2-uniform-type-identifiers = { version = "0.3", features = ["UTType"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

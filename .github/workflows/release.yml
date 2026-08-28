@@ -1,0 +1,126 @@
+# Baut FileRune für macOS, Linux und Windows und hängt die Ergebnisse an ein
+# Release. Läuft bei jedem Tag `v*` und auf Knopfdruck.
+#
+# Die Artefakte sind NICHT signiert: macOS zeigt beim ersten Start Gatekeeper,
+# Windows den SmartScreen-Hinweis. Zum Selbstbenutzen reicht das; für die
+# Weitergabe an andere braucht es Apple-Notarisierung und ein Windows-Zertifikat.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            os: macos-14
+            artifact: FileRune-macos.zip
+          - name: Linux (x86_64)
+            os: ubuntu-22.04
+            artifact: FileRune-linux-x86_64.tar.gz
+          - name: Windows (x86_64)
+            os: windows-2022
+            artifact: FileRune-windows-x86_64.zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Ein Universal-Binary braucht beide Apple-Architekturen.
+          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # winit, wgpu und arboard binden unter Linux gegen X11/Wayland.
+      - name: Linux-Abhängigkeiten
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Tests
+        run: cargo test --release
+
+      - name: Bauen (macOS, universal)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          # lipo statt zwei getrennter Downloads — die SwiftUI-Fassung war nur
+          # arm64 und lief auf Intel-Macs gar nicht.
+          mkdir -p target/universal
+          lipo -create -output target/universal/filerune \
+            target/aarch64-apple-darwin/release/filerune \
+            target/x86_64-apple-darwin/release/filerune
+          lipo -info target/universal/filerune
+          FILERUNE_BIN=target/universal/filerune ./bundle.sh
+          ditto -c -k --keepParent build/FileRune.app ${{ matrix.artifact }}
+
+      - name: Bauen (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release
+          install -Dm755 target/release/filerune dist/FileRune/filerune
+          install -Dm644 icon.png dist/FileRune/filerune.png
+          install -Dm644 README.md dist/FileRune/README.md
+          # Startereintrag für die Desktop-Umgebung.
+          cat > dist/FileRune/filerune.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=FileRune
+          Comment=Tastaturgetriebener Dateimanager
+          Exec=filerune
+          Icon=filerune
+          Categories=Utility;FileTools;FileManager;
+          Terminal=false
+          DESKTOP
+          tar -czf ${{ matrix.artifact }} -C dist FileRune
+
+      - name: Bauen (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release
+          mkdir dist
+          copy target\release\filerune.exe dist\FileRune.exe
+          copy README.md dist\README.md
+          Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          body: |
+            Unsignierte Bauten. Beim ersten Start:
+            · macOS — Rechtsklick auf FileRune.app → „Öffnen", dann bestätigen.
+            · Windows — SmartScreen → „Weitere Informationen" → „Trotzdem ausführen".
