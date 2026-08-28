@@ -97,12 +97,14 @@ impl Query {
     /// `stat` teuer aufgebaut wird. Spaltenfilter brauchen Größe und Datum, die
     /// Inhaltssuche muss ohnehin jede Datei ansehen — beide können hier nichts
     /// ausschließen.
-    fn may_match_name(&self, name: &str) -> bool {
+    fn may_match_name(&self, name: &str, is_dir: bool) -> bool {
         match self {
             Query::Name { needle, contents } => {
-                *contents || fuzzy::score(needle, name).is_some()
+                // Bei Inhaltssuche muss jede Datei aufgemacht werden; Ordner
+                // haben keinen Inhalt und fallen hier schon raus.
+                (*contents && !is_dir) || fuzzy::score(needle, name).is_some()
             }
-            Query::Column(_) => true,
+            Query::Column(f) => !f.quick_reject(name, is_dir),
         }
     }
 }
@@ -222,10 +224,11 @@ fn build_queue(
                     next.push(path.clone());
                 }
                 // Auch ein Ordner kann selbst ein Treffer sein.
-                if query.may_match_name(&name) {
-                    if let Some(mut e) = Entry::from_path(path, Some(root)) {
+                if query.may_match_name(&name, is_dir) {
+                    if let Some(mut e) = Entry::from_path(path, None) {
                         if let Some((score, line)) = query.evaluate(&e) {
                             e.matched_line = line;
+                            e.set_rel_parent(root);
                             hits.push((e, score));
                         }
                     }
@@ -276,18 +279,20 @@ fn walk(
         }
 
         let name = item.file_name().to_string_lossy();
-        if !query.may_match_name(&name) {
+        if !query.may_match_name(&name, item.file_type().is_dir()) {
             continue;
         }
-        let Some(e) = Entry::from_path(item.path().to_path_buf(), Some(root)) else {
+        // Der Ordnerpfad wird erst für echte Treffer gebaut — sonst legt die
+        // Inhaltssuche für jede Datei im Baum einen String an, den sie wegwirft.
+        let Some(mut e) = Entry::from_path(item.path().to_path_buf(), None) else {
             continue;
         };
-        let Some((s, line)) = query.evaluate(&e) else {
+        let Some((score, line)) = query.evaluate(&e) else {
             continue;
         };
-        let mut e = e;
         e.matched_line = line;
-        hits.push((e, s));
+        e.set_rel_parent(root);
+        hits.push((e, score));
 
         // NICHT bei `limit` abbrechen: der Walker läuft in die Tiefe, also füllte
         // ein einziger Build-Ordner das Budget, bevor die Geschwister drankamen —

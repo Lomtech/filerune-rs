@@ -36,6 +36,14 @@ impl Entry {
             .to_lowercase()
     }
 
+    /// Setzt den Ordnerpfad relativ zur Suchwurzel. Bewusst getrennt vom
+    /// Anlegen: bei der Inhaltssuche wird jede Datei zum Kandidaten, und ein
+    /// String für jeden Kandidaten wäre reine Verschwendung — die allermeisten
+    /// passen nicht.
+    pub fn set_rel_parent(&mut self, root: &Path) {
+        self.rel_parent = rel_parent_of(&self.path, root);
+    }
+
     /// Baut einen Eintrag aus einem Pfad; `rel_parent` wird gegen `root` bestimmt.
     pub fn from_path(path: PathBuf, root: Option<&Path>) -> Option<Entry> {
         let md = std::fs::symlink_metadata(&path).ok()?;

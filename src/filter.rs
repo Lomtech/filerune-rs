@@ -93,6 +93,42 @@ impl ColumnFilter {
         None
     }
 
+    /// Vorauswahl allein aus Name und Ordner-Eigenschaft — ohne `stat`.
+    /// `None` heißt „lässt sich so nicht entscheiden", dann muss der Eintrag
+    /// aufgebaut werden. Größe und Datum stehen nun einmal nicht im Namen.
+    pub fn quick_reject(&self, name: &str, is_dir: bool) -> bool {
+        let ext = || {
+            std::path::Path::new(name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase()
+        };
+        match self {
+            ColumnFilter::Nothing => true,
+            // Kein `is_dir`-Ausschluss: ein Paket wie „Foo.app" ist ein Ordner
+            // MIT Endung und muss bei `.app` mitkommen — `matches` sieht das
+            // genauso, und die Vorauswahl darf nie strenger sein als sie.
+            ColumnFilter::Extension(v) => ext() != *v,
+            ColumnFilter::Kind(v) => {
+                // Muss `Entry::kind()` exakt nachbilden, sonst verwirft die
+                // Vorauswahl Treffer: eine Datei ohne Endung heißt dort
+                // „Dokument", nicht „".
+                let kind = if is_dir {
+                    "ordner".to_string()
+                } else if ext().is_empty() {
+                    "dokument".to_string()
+                } else {
+                    ext()
+                };
+                !kind.contains(v) && !ext().contains(v)
+            }
+            // Größe und Datum brauchen die Metadaten.
+            ColumnFilter::Size { .. } | ColumnFilter::DateCompare { .. }
+            | ColumnFilter::DateContains(_) => false,
+        }
+    }
+
     pub fn matches(&self, e: &Entry) -> bool {
         match self {
             ColumnFilter::Nothing => false,
@@ -251,6 +287,40 @@ mod tests {
         assert!(ColumnFilter::parse(".tar.gz").is_none()); // Punkt darin
         assert!(ColumnFilter::parse(".").is_none());
         assert!(ColumnFilter::parse(". pdf").is_none());
+    }
+
+    /// Die Vorauswahl spart das teure `stat`, darf aber nie etwas verwerfen,
+    /// das `matches` durchlassen würde — sonst fehlen Treffer.
+    #[test]
+    fn quick_reject_never_stricter_than_matches() {
+        let cases = [
+            // (Eingabe, Name, ist Ordner)
+            ("art:dokument", "README", false),   // Datei ohne Endung heißt „Dokument"
+            ("art:ordner", "Projekte", true),
+            ("art:csv", "daten.csv", false),
+            (".app", "Foo.app", true),           // Paket: Ordner MIT Endung
+            (".csv", "daten.csv", false),
+            (">1mb", "irgendwas.bin", false),    // Größe kennt der Name nicht
+            ("datum:2026", "irgendwas.bin", false),
+        ];
+        for (query, name, is_dir) in cases {
+            let f = ColumnFilter::parse(query).unwrap();
+            let e = Entry {
+                path: PathBuf::from("/tmp").join(name),
+                name: name.to_string(),
+                is_dir,
+                size: 2 * 1024 * 1024,
+                modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_780_000_000)),
+                rel_parent: String::new(),
+                matched_line: None,
+            };
+            if f.matches(&e) {
+                assert!(
+                    !f.quick_reject(name, is_dir),
+                    "{query:?} passt auf {name:?}, wird aber vorab verworfen"
+                );
+            }
+        }
     }
 
     #[test]

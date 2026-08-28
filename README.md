@@ -106,6 +106,7 @@ ohne Icon ausliefern.
 | `src/state.rs` | `AppModel.swift` | Navigation, Sortierstapel, Auswahl, Favoriten |
 | `src/ui.rs` | `ContentView.swift` | Leisten, Liste, Blätter, Tastatur |
 | `bundle.sh` / `bundle.ps1` | — | App-Bundle auf macOS, `.exe` und Installation auf Windows |
+| `examples/bench.rs` | — | Messung der Suchpfade, damit Optimierungen an Zahlen hängen |
 
 ## Bedienung
 
@@ -145,6 +146,37 @@ Hintergrund nimmt dann die Inhalte dazu.
 
 PDFs bleiben außen vor. Die SwiftUI-Fassung liest sie über PDFKit; in Rust wäre
 das eine große, wacklige Abhängigkeit.
+
+### Geschwindigkeit
+
+Gemessen mit `cargo run --release --example bench -- <Ordner>` über einen Baum
+mit 10 884 Dateien / 664 MB auf acht Kernen:
+
+| | vorher | jetzt |
+|---|---|---|
+| Endungsfilter `.rs` | 62 ms | 13 ms |
+| Inhaltssuche, Dateicache warm | ~315 ms | ~80 ms |
+| Inhaltssuche, Dateicache kalt | 684 ms | 382 ms |
+| Namenssuche | 40 ms | 33 ms |
+
+Drei Hebel, in dieser Reihenfolge wirksam:
+
+1. **Kein `stat` für Aussichtslose.** Endung und Art stehen im Dateinamen; die
+   Vorauswahl entscheidet ohne Metadaten. Dazu wird der Ordnerpfad eines Treffers
+   erst gebaut, wenn es einer ist — vorher legte die Inhaltssuche für jede Datei
+   im Baum einen String an, den sie wegwarf.
+2. **Kein `to_lowercase()` je Zeile.** Aszii-Suchbegriffe werden byteweise
+   verglichen, Kandidaten findet `memchr` mit SIMD — und zwar über das
+   *seltenste* Zeichen des Suchbegriffs, nicht das erste.
+3. Die Vorauswahl darf nie strenger sein als der eigentliche Vergleich, sonst
+   fehlen Treffer. Ein Test hält das fest; zwei solche Fehler steckten schon drin
+   (`art:dokument` und `.app` auf Paketordnern).
+
+Warm ist die Inhaltssuche mit ~80 ms **unabhängig vom Suchbegriff** — auch einer
+ohne einen einzigen Treffer, der jede Datei ganz durchlaufen muss, kostet nicht
+mehr. Das Suchen selbst ist damit nicht mehr der Engpass; die verbleibende Zeit
+ist Plattenzugriff. Zum Vergleich: dieselben Dateien einmal einlesen, ohne jede
+Suche und einzeln statt parallel, dauert 1050 ms.
 
 ### Parallelität
 

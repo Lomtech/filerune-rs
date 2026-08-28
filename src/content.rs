@@ -50,15 +50,102 @@ pub fn find(path: &Path, size: u64, needle: &str) -> Option<String> {
     if bytes.iter().take(1024).any(|b| *b == 0) {
         return None;
     }
-    let text = String::from_utf8_lossy(&bytes);
 
-    for (i, line) in text.lines().enumerate() {
-        let lower = line.to_lowercase();
-        if let Some(at) = lower.find(needle) {
-            return Some(format!("Zeile {}: {}", i + 1, snippet(line, &lower, at, needle.len())));
+    // Der schnelle Weg: rein aszii-Suchbegriffe werden byteweise verglichen,
+    // ohne für jede Zeile einen kleingeschriebenen String anzulegen. Genau das
+    // war der teuerste Posten der Inhaltssuche.
+    let at = if needle.is_ascii() {
+        find_ascii_ci(&bytes, needle.as_bytes())?
+    } else {
+        // Umlaute und dergleichen brauchen echte Unicode-Kleinschreibung;
+        // dafür nehmen wir den langsameren Weg in Kauf.
+        let text = String::from_utf8_lossy(&bytes);
+        let lower = text.to_lowercase();
+        // Position im kleingeschriebenen Text ist nicht die im Original, wenn
+        // sich die Bytelänge ändert (ẞ→ss). Deshalb hier zeilenweise.
+        for (i, line) in text.lines().enumerate() {
+            let line_lower = line.to_lowercase();
+            if let Some(at) = line_lower.find(needle) {
+                return Some(format!(
+                    "Zeile {}: {}",
+                    i + 1,
+                    snippet(line, &line_lower, at, needle.len())
+                ));
+            }
         }
+        let _ = lower;
+        return None;
+    };
+
+    // Fundstelle gefunden: erst jetzt Zeilennummer und Ausschnitt bestimmen.
+    let line_no = bytes[..at].iter().filter(|b| **b == b'\n').count() + 1;
+    let line_start = bytes[..at].iter().rposition(|b| *b == b'\n').map_or(0, |p| p + 1);
+    let line_end = bytes[at..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map_or(bytes.len(), |p| at + p);
+    let line = String::from_utf8_lossy(&bytes[line_start..line_end]).into_owned();
+    let lower = line.to_lowercase();
+    let in_line = lower.find(needle).unwrap_or(0);
+    Some(format!("Zeile {line_no}: {}", snippet(&line, &lower, in_line, needle.len())))
+}
+
+/// Grobe Häufigkeit eines Zeichens in Text — kleiner heißt seltener. Dient nur
+/// dazu, im Suchbegriff einen guten Einstiegspunkt zu wählen; die Zahlen müssen
+/// nicht stimmen, nur die Reihenfolge grob.
+fn commonness(b: u8) -> u8 {
+    match b.to_ascii_lowercase() {
+        b'e' => 255, b'n' => 240, b't' => 235, b'a' => 230, b'i' => 225,
+        b'r' => 220, b's' => 215, b'o' => 205, b'l' => 190, b'h' => 180,
+        b'd' => 175, b'u' => 170, b'c' => 160, b'm' => 150, b'g' => 130,
+        b'p' => 120, b'f' => 115, b'b' => 105, b'w' => 100, b'y' => 80,
+        b'v' => 70, b'k' => 60, b'x' => 30, b'j' => 25, b'q' => 20, b'z' => 20,
+        b' ' => 250, b'\t' | b'\n' => 245,
+        b'0'..=b'9' => 90,
+        // Satz- und Sonderzeichen sind in Fließtext selten, in Quelltext aber
+        // häufig — mittig einsortiert, damit sie weder bevorzugt noch gemieden werden.
+        _ => 110,
     }
-    None
+}
+
+/// Aszii-Suche ohne Rücksicht auf Groß- und Kleinschreibung, ohne Allokation.
+/// `needle` ist bereits kleingeschrieben.
+///
+/// Eingestiegen wird über das **seltenste** Zeichen des Suchbegriffs, nicht über
+/// das erste: nach dem „p" in „Papierkorb" zu suchen liefert in Quelltext
+/// Zehntausende Fehlversuche, nach dem „k" kaum welche. Die Kandidatensuche
+/// selbst macht `memchr` mit SIMD.
+fn find_ascii_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let pivot = (0..needle.len())
+        .min_by_key(|&i| commonness(needle[i]))
+        .unwrap_or(0);
+    let lower = needle[pivot];
+    let upper = lower.to_ascii_uppercase();
+
+    let mut offset = pivot;
+    loop {
+        let rest = &hay[offset..];
+        let found = if lower == upper {
+            memchr::memchr(lower, rest)
+        } else {
+            memchr::memchr2(lower, upper, rest)
+        };
+        let at = offset + found?;
+        // Vom Fundort des Einstiegszeichens auf den Anfang zurückrechnen.
+        let start = at - pivot;
+        if start + needle.len() <= hay.len()
+            && hay[start..start + needle.len()]
+                .iter()
+                .zip(needle)
+                .all(|(h, n)| h.to_ascii_lowercase() == *n)
+        {
+            return Some(start);
+        }
+        offset = at + 1;
+    }
 }
 
 /// Schneidet einen lesbaren Ausschnitt um die Fundstelle heraus.
@@ -124,6 +211,28 @@ mod tests {
         let p = tmp("d.txt", "Nadel");
         assert!(find(&p, MAX_FILE_SIZE + 1, "nadel").is_none());
         assert!(find(&p, 0, "nadel").is_none());
+    }
+
+    /// Der Einstieg über das seltenste Zeichen darf das Ergebnis nicht ändern —
+    /// nur die Geschwindigkeit. Treffer am Anfang, in der Mitte und am Ende.
+    #[test]
+    fn rare_byte_entry_finds_the_same_matches() {
+        for (hay, needle, expect) in [
+            ("Papierkorb ganz vorn", "papierkorb", Some(0)),
+            ("davor Papierkorb dahinter", "papierkorb", Some(6)),
+            ("nur am Ende: Papierkorb", "papierkorb", Some(13)),
+            ("PAPIERKORB laut", "papierkorb", Some(0)),
+            ("kein Treffer hier", "papierkorb", None),
+            // Das seltenste Zeichen steht ganz vorn bzw. ganz hinten.
+            ("wo ist xylophon", "xylophon", Some(7)),
+            ("endet auf zack", "zack", Some(10)),
+        ] {
+            assert_eq!(
+                find_ascii_ci(hay.as_bytes(), needle.as_bytes()),
+                expect,
+                "{hay:?} / {needle:?}"
+            );
+        }
     }
 
     #[test]
