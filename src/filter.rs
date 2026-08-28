@@ -172,6 +172,7 @@ mod tests {
             size,
             modified: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs)),
             rel_parent: String::new(),
+            matched_line: None,
         }
     }
 

@@ -6,6 +6,7 @@
 //! Rust-Fassung der SwiftUI-App: dieselbe Bedienung, dieselben Kürzel, dieselbe
 //! Such- und Filterlogik — nur ohne AppKit. Oberfläche: egui/eframe.
 
+mod content;
 mod entry;
 mod filter;
 mod fuzzy;

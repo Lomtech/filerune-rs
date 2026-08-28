@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const SEARCH_LIMIT: usize = 1000;
+/// Ab so vielen Zeichen wird zusätzlich im Dateiinhalt gesucht.
+const MIN_CONTENT_QUERY: usize = 2;
 /// Wartezeit, bis der Tiefenscan startet — die lokalen Treffer stehen sofort.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const FLASH_DURATION: Duration = Duration::from_millis(1600);
@@ -85,6 +87,8 @@ pub struct AppState {
     /// gab es keinen Tiefenscan, und die Statuszeile sagt das auch.
     pub column_filtered: bool,
     pub is_searching: bool,
+    /// Läuft gerade auch eine Suche im Dateiinhalt?
+    pub searching_contents: bool,
 
     pub selected_index: usize,
     pub selection: HashSet<PathBuf>,
@@ -153,6 +157,7 @@ impl AppState {
             filter: String::new(),
             column_filtered: false,
             is_searching: false,
+            searching_contents: false,
             selected_index: 0,
             selection: HashSet::new(),
             anchor_index: 0,
@@ -205,6 +210,11 @@ impl AppState {
         self.all_entries.len()
     }
 
+    /// Wie viele der angezeigten Treffer aus dem Dateiinhalt kamen.
+    pub fn content_hits(&self) -> usize {
+        self.view.iter().filter(|e| e.matched_line.is_some()).count()
+    }
+
     // MARK: - Filter und Suche
 
     pub fn set_filter(&mut self, text: String) {
@@ -222,6 +232,7 @@ impl AppState {
 
         if self.filter.is_empty() {
             self.is_searching = false;
+            self.searching_contents = false;
             self.search_results.clear();
             self.rebuild_view();
             self.reset_selection_to_top();
@@ -237,20 +248,33 @@ impl AppState {
         // nichts — in /Users etwa, wo nur zwei Unterordner liegen. Der
         // Platzhalter des Feldes verspricht „auch Unterordner", also gilt das
         // jetzt für den Filter genauso.
-        let query = match ColumnFilter::parse(&self.filter) {
+        // Inhalte erst ab zwei Zeichen durchsuchen: bei einem einzelnen
+        // Buchstaben passt praktisch jede Textdatei, und das Lesen kostet
+        // dann umsonst.
+        let with_contents = self.filter.chars().count() >= MIN_CONTENT_QUERY;
+
+        let (instant, deep) = match ColumnFilter::parse(&self.filter) {
             Some(f) => {
                 self.column_filtered = true;
-                Query::Column(f)
+                (Query::Column(f.clone()), Query::Column(f))
             }
-            None => Query::Name(self.filter.clone()),
+            None => (
+                // Für die Sofortanzeige NUR der Name: local_matches läuft auf
+                // dem UI-Thread, und dort darf nichts von der Platte gelesen
+                // werden — sonst ruckelt jeder Tastendruck.
+                Query::Name { needle: self.filter.clone(), contents: false },
+                Query::Name { needle: self.filter.clone(), contents: with_contents },
+            ),
         };
+        self.searching_contents = with_contents && !self.column_filtered;
 
         // Sofort: Treffer im aktuellen Ordner …
-        self.search_results = search::local_matches(&query, &self.all_entries);
+        self.search_results = search::local_matches(&instant, &self.all_entries);
         self.rebuild_view();
         self.reset_selection_to_top();
-        // … danach im Hintergrund rekursiv in die Unterordner erweitern.
-        self.spawn_recursive_search(gen, query);
+        // … danach im Hintergrund rekursiv in die Unterordner erweitern, dann
+        // auch im Dateiinhalt.
+        self.spawn_recursive_search(gen, deep);
     }
 
     fn spawn_recursive_search(&mut self, gen: u64, query: Query) {

@@ -12,6 +12,8 @@ pub struct Entry {
     pub modified: Option<SystemTime>,
     /// Ordnerpfad relativ zur Suchwurzel ("" wenn direkt darin) — nur bei Suchtreffern gesetzt.
     pub rel_parent: String,
+    /// Die Fundstelle, wenn der Treffer aus dem Dateiinhalt kam statt aus dem Namen.
+    pub matched_line: Option<String>,
 }
 
 impl Entry {
@@ -56,6 +58,7 @@ impl Entry {
             modified: md.modified().ok(),
             path,
             rel_parent,
+            matched_line: None,
         })
     }
 }

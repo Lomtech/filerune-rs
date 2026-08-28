@@ -578,11 +578,25 @@ impl FileRuneApp {
                         .color(Color32::from_rgb(220, 76, 62)),
                 );
             } else if !self.state.filter.is_empty() {
-                let suffix = if self.state.is_searching { " · suche…" } else { "" };
+                let suffix = if self.state.is_searching {
+                    if self.state.searching_contents {
+                        " · suche Name und Inhalt…"
+                    } else {
+                        " · suche…"
+                    }
+                } else {
+                    ""
+                };
                 let text = if self.state.column_filtered {
                     format!("{shown} gefiltert{suffix} · rekursiv ab {folder}")
                 } else {
-                    format!("{shown} Treffer{suffix} · rekursiv ab {folder}")
+                    let inhalt = self.state.content_hits();
+                    let davon = if inhalt > 0 {
+                        format!(" ({inhalt} im Inhalt)")
+                    } else {
+                        String::new()
+                    };
+                    format!("{shown} Treffer{davon}{suffix} · rekursiv ab {folder}")
                 };
                 if self.state.is_searching {
                     ui.add(egui::Spinner::new().size(11.0));
@@ -801,7 +815,15 @@ impl FileRuneApp {
         let date_left = size_right - COL_SIZE - 8.0 - COL_DATE;
         let name_width = (date_left - name_left - 8.0).max(60.0);
 
-        let has_subtitle = !entry.rel_parent.is_empty();
+        // Zweite Zeile: bei Inhaltstreffern die Fundstelle, sonst der Ordner.
+        // Bei Inhaltstreffern beides, denn wo die Datei liegt, will man auch wissen.
+        let subtitle = match (&entry.matched_line, entry.rel_parent.as_str()) {
+            (Some(line), "") => Some(line.clone()),
+            (Some(line), folder) => Some(format!("{folder}  ·  {line}")),
+            (None, "") => None,
+            (None, folder) => Some(format!("↳ {folder}")),
+        };
+        let has_subtitle = subtitle.is_some();
         let painter = ui.painter();
         let text_color = ui.visuals().text_color();
         let weak = ui.visuals().weak_text_color();
@@ -822,14 +844,16 @@ impl FileRuneApp {
         };
         painter.galley(egui::pos2(name_left, name_y), name_galley.clone(), text_color);
 
-        if has_subtitle {
+        if let Some(text) = &subtitle {
+            // Inhaltstreffer vorne kürzen wäre falsch — dort steht die Zeilennummer.
+            let trim = if entry.matched_line.is_some() { Trim::Middle } else { Trim::Head };
             let sub = galley_one_line(
                 painter,
-                &format!("↳ {}", entry.rel_parent),
+                text,
                 egui::FontId::proportional(10.0),
-                weak,
+                if entry.matched_line.is_some() { self.accent } else { weak },
                 name_width,
-                Trim::Head,
+                trim,
             );
             painter.galley(
                 egui::pos2(name_left, name_y + name_galley.size().y + 2.0),

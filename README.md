@@ -98,6 +98,7 @@ ohne Icon ausliefern.
 | `src/fuzzy.rs` | `FuzzyMatch.swift` | Subsequenz-Match mit Positionsboni |
 | `src/filter.rs` | `AppModel.columnFilter` | `art:` · `>1mb` · `datum:` |
 | `src/search.rs` | `DirectorySearch.swift` | rekursive Suche, parallel, abbrechbar |
+| `src/content.rs` | `ContentSearch.swift` | Volltextsuche in Dateien |
 | `src/ops.rs` | Dateioperationen in `AppModel` | umbenennen, duplizieren, einfügen, Papierkorb |
 | `src/integrate.rs` | `openInZed`/`openInTerminal` | fremde Apps, Zwischenablage |
 | `src/platform/macos.rs` | `IconProvider.swift` | Finder-Icons + SF Symbols als egui-Texturen |
@@ -125,6 +126,35 @@ stattdessen dieser — ebenfalls rekursiv:
 Die Kurzform mit Punkt ist eng gefasst: ein Endungswort ohne weitere Punkte, damit
 `.tar.gz` und `.zshrc` in der Namenssuche bleiben. Ein vorangestelltes `filtern:`
 wird geschluckt — der Platzhalter des Originals sah so aus, und Leute tippten ihn ab.
+
+### Suche im Dateiinhalt
+
+Ab zwei Zeichen wird zusätzlich **in den Dateien** gesucht, nicht nur in ihren
+Namen — ohne Suchindex, direkt gelesen, damit es in jedem Ordner und auf allen
+drei Systemen gleich funktioniert. Solche Treffer stehen in Akzentfarbe unter dem
+Dateinamen, mit Zeilennummer und Fundstelle; die Statuszeile sagt, wie viele der
+Treffer daher kamen.
+
+Gelesen wird nur, was nach Text aussieht (Endungsliste in `src/content.rs`, dazu
+Namen wie `Makefile`) und höchstens 16 MB groß ist; ein Null-Byte im ersten
+Kilobyte gilt trotz passender Endung als Binärdatei. **Namenstreffer stehen immer
+über Inhaltstreffern** — sonst findet man die Datei nicht wieder, deren Name genau
+passt. Die Sofortanzeige beim Tippen sucht bewusst nur im Namen: sie läuft auf dem
+UI-Thread, dort darf nichts von der Platte gelesen werden. Der Tiefenscan im
+Hintergrund nimmt dann die Inhalte dazu.
+
+PDFs bleiben außen vor. Die SwiftUI-Fassung liest sie über PDFKit; in Rust wäre
+das eine große, wacklige Abhängigkeit.
+
+### Parallelität
+
+Ein Arbeiter je Kern zieht sich Unterbäume aus einer gemeinsamen Warteschlange.
+Die Warteschlange entsteht, indem der Baum so weit aufgeklappt wird, bis genug
+Ordner für alle Kerne da sind (höchstens drei Ebenen) — bei einem Ordner mit nur
+zwei Unterordnern läge sonst der Großteil der Maschine brach, was beim Lesen von
+Dateiinhalten richtig weh tut. Zurückgegeben wird dabei **nur die tiefste**
+aufgeklappte Ebene; gäbe man die darüberliegenden mit, liefe deren Unterbaum
+zweimal und jeder Treffer erschiene doppelt.
 
 | Taste | Wirkung |
 |---|---|
@@ -201,7 +231,7 @@ wäre es in `AppState::on_filter_changed`, indem der Tiefenscan für
 ## Was bewusst fehlt
 
 Gegenüber der SwiftUI-Fassung nicht enthalten: Speicher-Analyse mit Diagramm,
-Ordner-Icons/Tints, Inhaltssuche über Spotlight, Quick-Look-Vorschau,
+Ordner-Icons/Tints, Quick-Look-Vorschau,
 Sparkle-Updates und das Lizenz-Gate.
 
 Kopieren/Einfügen läuft über eine app-interne Ablage; die Pfade landen zusätzlich
