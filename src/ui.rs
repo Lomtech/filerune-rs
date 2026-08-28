@@ -43,6 +43,8 @@ pub struct FileRuneApp {
     /// Zeile, zu der die Liste beim nächsten Aufbau scrollen soll.
     scroll_to: Option<usize>,
     focus_filter: bool,
+    /// Einmalige Prüfung nach dem Start, ob das Fenster im Bild liegt.
+    checked_on_screen: bool,
 }
 
 impl FileRuneApp {
@@ -58,6 +60,7 @@ impl FileRuneApp {
             filter_text: String::new(),
             scroll_to: None,
             focus_filter: true,
+            checked_on_screen: false,
         }
     }
 
@@ -78,6 +81,29 @@ impl eframe::App for FileRuneApp {
 
         // Fenstergröße und -position mitschreiben, damit beides beim nächsten
         // Start wieder so ist.
+        // Eine wiederhergestellte Position kann ins Leere zeigen, wenn seither
+        // ein Bildschirm abgesteckt oder die Anordnung geändert wurde. Dann
+        // stünde die App unsichtbar irgendwo — der schlimmste Fehler, den ein
+        // Fenster haben kann. Also einmal nach dem Start zurückholen.
+        if !self.checked_on_screen {
+            self.checked_on_screen = true;
+            let rescue = ctx.input(|i| {
+                let vp = i.viewport();
+                let (Some(outer), Some(monitor)) = (vp.outer_rect, vp.monitor_size) else {
+                    return None;
+                };
+                // Mindestens 80 × 80 Punkte müssen sichtbar bleiben.
+                let visible = outer.left() < monitor.x - 80.0
+                    && outer.top() < monitor.y - 80.0
+                    && outer.right() > 80.0
+                    && outer.bottom() > 80.0;
+                (!visible).then_some(egui::pos2(80.0, 80.0))
+            });
+            if let Some(pos) = rescue {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+            }
+        }
+
         let (size, pos, special) = ctx.input(|i| {
             let vp = i.viewport();
             (

@@ -248,10 +248,17 @@ mod tests {
         assert!(!should_skip("src", Path::new("/x/src")));
     }
 
+    /// Bewusst gegen SKIP_PATHS selbst geprüft statt gegen einen festen Pfad:
+    /// `/System` gibt es nur auf macOS, `/proc` nur auf Linux, `C:\Windows` nur
+    /// auf Windows — ein fest verdrahteter Pfad lässt den Test anderswo scheitern.
     #[test]
     fn skips_system_roots_but_not_lookalikes() {
-        assert!(should_skip("System", Path::new("/System")));
+        let root = Path::new(SKIP_PATHS[0]);
+        let name = root.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(should_skip(&name, root));
+
         // Ein gleichnamiger Ordner tiefer im Baum darf nicht mitgesperrt werden.
-        assert!(!should_skip("System", Path::new("/Users/x/System")));
+        let deeper = root.parent().unwrap().join("irgendwo").join(&name);
+        assert!(!should_skip(&name, &deeper));
     }
 }

@@ -91,75 +91,19 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Änderungsdatum als „TT.MM.JJ, HH:MM“ — das Kurzformat der SwiftUI-Fassung.
 pub fn format_date(t: Option<SystemTime>) -> String {
-    let Some(t) = t else { return String::new() };
-    let Ok(dur) = t.duration_since(SystemTime::UNIX_EPOCH) else {
-        return String::new();
-    };
-    let (y, mo, d, h, mi) = civil_local(dur.as_secs() as i64);
-    format!("{d:02}.{mo:02}.{:02}, {h:02}:{mi:02}", y % 100)
+    match t {
+        Some(t) => chrono::DateTime::<chrono::Local>::from(t)
+            .format("%d.%m.%y, %H:%M")
+            .to_string(),
+        None => String::new(),
+    }
 }
 
 /// Änderungsdatum als ISO-Tag (yyyy-MM-dd) — Vergleichsbasis des `datum:`-Filters.
 pub fn iso_day(t: Option<SystemTime>) -> Option<String> {
-    let dur = t?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
-    let (y, mo, d, _, _) = civil_local(dur.as_secs() as i64);
-    Some(format!("{y:04}-{mo:02}-{d:02}"))
-}
-
-/// Unix-Sekunden → lokale Kalenderzeit. Der Offset kommt einmalig aus libc
-/// (`localtime_r`), damit Sommerzeit und Zone stimmen, ohne chrono/time-Crate.
-fn civil_local(unix: i64) -> (i64, u32, u32, u32, u32) {
-    let secs = unix + local_offset_seconds(unix);
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (y, mo, d) = civil_from_days(days);
-    (y, mo, d, (rem / 3600) as u32, ((rem % 3600) / 60) as u32)
-}
-
-fn local_offset_seconds(unix: i64) -> i64 {
-    // `struct tm` ist plattformabhängig groß; 64 Zeiger-große Felder sind reichlich
-    // Platz, und wir lesen nur tm_gmtoff über die dokumentierte Feldposition aus.
-    extern "C" {
-        fn localtime_r(time: *const i64, tm: *mut Tm) -> *mut Tm;
-    }
-    #[repr(C)]
-    #[derive(Default)]
-    struct Tm {
-        sec: i32,
-        min: i32,
-        hour: i32,
-        mday: i32,
-        mon: i32,
-        year: i32,
-        wday: i32,
-        yday: i32,
-        isdst: i32,
-        gmtoff: i64,
-        zone: *const i8,
-    }
-    let mut tm = Tm {
-        zone: std::ptr::null(),
-        ..Default::default()
-    };
-    let t = unix;
-    unsafe {
-        if localtime_r(&t, &mut tm).is_null() {
-            return 0;
-        }
-    }
-    tm.gmtoff
-}
-
-/// Howard Hinnants `civil_from_days` — Tage seit 1970-01-01 → (Jahr, Monat, Tag).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    Some(
+        chrono::DateTime::<chrono::Local>::from(t?)
+            .format("%Y-%m-%d")
+            .to_string(),
+    )
 }
