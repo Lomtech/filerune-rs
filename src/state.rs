@@ -120,6 +120,29 @@ pub struct AppState {
     generation: Arc<AtomicU64>,
     search_tx: Sender<(u64, Vec<Entry>)>,
     search_rx: Receiver<(u64, Vec<Entry>)>,
+
+    /// Das Einlesen läuft auf einem eigenen Thread: 50 000 Einträge dauern
+    /// ~180 ms, und die hätte man sonst als eingefrorenes Fenster.
+    scan_generation: Arc<AtomicU64>,
+    scan_tx: Sender<ScanResult>,
+    scan_rx: Receiver<ScanResult>,
+    /// Was nach dem nächsten Einlesen ausgewählt werden soll.
+    after_load: Option<AfterLoad>,
+    pub is_loading: bool,
+}
+
+/// Auswahl, die erst gesetzt werden kann, wenn die Einträge da sind.
+enum AfterLoad {
+    Name(String),
+    Index(usize),
+}
+
+struct ScanResult {
+    generation: u64,
+    dir: PathBuf,
+    entries: Vec<Entry>,
+    error: Option<String>,
+    took_ms: f64,
 }
 
 impl AppState {
@@ -149,6 +172,7 @@ impl AppState {
         };
 
         let (search_tx, search_rx) = channel();
+        let (scan_tx, scan_rx) = channel();
         let mut state = AppState {
             current_dir,
             all_entries: Vec::new(),
@@ -183,6 +207,11 @@ impl AppState {
             generation: Arc::new(AtomicU64::new(0)),
             search_tx,
             search_rx,
+            scan_generation: Arc::new(AtomicU64::new(0)),
+            scan_tx,
+            scan_rx,
+            after_load: None,
+            is_loading: false,
         };
         state.load();
         state
@@ -190,20 +219,60 @@ impl AppState {
 
     // MARK: - Laden
 
+    /// Stößt das Einlesen an. Läuft auf einem eigenen Thread; das Ergebnis holt
+    /// `poll_scan` ab. Ein noch laufendes Einlesen wird über den
+    /// Generationszähler entwertet, wenn schon weitergeklickt wurde.
     pub fn load(&mut self) {
-        let started = Instant::now();
-        match scanner::scan(&self.current_dir, self.show_hidden) {
-            Ok(entries) => {
-                self.all_entries = entries;
-                self.error = None;
+        let generation = self.scan_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.is_loading = true;
+
+        let dir = self.current_dir.clone();
+        let hidden = self.show_hidden;
+        let tx = self.scan_tx.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let (entries, error) = match scanner::scan(&dir, hidden) {
+                Ok(entries) => (entries, None),
+                Err(e) => (Vec::new(), Some(format!("{}: {e}", dir.display()))),
+            };
+            let _ = tx.send(ScanResult {
+                generation,
+                dir,
+                entries,
+                error,
+                took_ms: started.elapsed().as_secs_f64() * 1000.0,
+            });
+        });
+    }
+
+    /// Holt fertige Einlese-Ergebnisse ab. `true`, wenn sich etwas geändert hat.
+    pub fn poll_scan(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(res) = self.scan_rx.try_recv() {
+            if res.generation != self.scan_generation.load(Ordering::SeqCst) {
+                continue; // veraltet — es wurde schon weitergeklickt
             }
-            Err(e) => {
-                self.all_entries.clear();
-                self.error = Some(format!("{}: {e}", self.current_dir.display()));
+            // Ergebnis eines Ordners, den wir gar nicht mehr anzeigen: verwerfen.
+            if res.dir != self.current_dir {
+                continue;
             }
+            self.all_entries = res.entries;
+            self.error = res.error;
+            self.load_ms = res.took_ms;
+            self.is_loading = false;
+            self.on_filter_changed();
+            match self.after_load.take() {
+                Some(AfterLoad::Name(name)) => self.select_by_name(&name),
+                Some(AfterLoad::Index(idx)) => {
+                    if !self.view.is_empty() {
+                        self.select_only(idx.min(self.view.len() - 1));
+                    }
+                }
+                None => {}
+            }
+            changed = true;
         }
-        self.load_ms = started.elapsed().as_secs_f64() * 1000.0;
-        self.on_filter_changed();
+        changed
     }
 
     pub fn total_count(&self) -> usize {
@@ -333,7 +402,7 @@ impl AppState {
                         return if crit.ascending { c } else { c.reverse() };
                     }
                 }
-                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                cmp_ignoring_case(&a.name, &b.name)
             })
         });
         self.view = list;
@@ -405,7 +474,7 @@ impl AppState {
         };
         let name = entry.name.clone();
         self.navigate(parent, true);
-        self.select_by_name(&name);
+        self.after_load = Some(AfterLoad::Name(name));
     }
 
     pub fn go_up(&mut self) {
@@ -684,10 +753,10 @@ impl AppState {
         match ops::paste(&sources, &dest) {
             Ok((msg, last)) => {
                 self.flash(msg);
+                // Auswahl erst setzen, wenn die Einträge da sind — das
+                // Einlesen läuft jetzt nebenläufig.
+                self.after_load = last.map(AfterLoad::Name);
                 self.load();
-                if let Some(name) = last {
-                    self.select_by_name(&name);
-                }
             }
             Err(e) => self.error = Some(e),
         }
@@ -702,10 +771,8 @@ impl AppState {
         match ops::move_to_trash(&paths) {
             Ok(msg) => {
                 self.flash(msg);
+                self.after_load = Some(AfterLoad::Index(keep));
                 self.load();
-                if !self.view.is_empty() {
-                    self.select_only(keep.min(self.view.len() - 1));
-                }
             }
             Err(e) => self.error = Some(e),
         }
@@ -717,9 +784,8 @@ impl AppState {
                 if !msg.is_empty() {
                     self.flash(msg);
                 }
-                let name = new_name.trim().to_string();
+                self.after_load = Some(AfterLoad::Name(new_name.trim().to_string()));
                 self.load();
-                self.select_by_name(&name);
             }
             Err(e) => self.error = Some(e),
         }
@@ -732,8 +798,8 @@ impl AppState {
         match ops::duplicate(&path) {
             Ok((msg, created)) => {
                 self.flash(msg);
+                self.after_load = Some(AfterLoad::Name(created));
                 self.load();
-                self.select_by_name(&created);
             }
             Err(e) => self.error = Some(e),
         }
@@ -744,8 +810,8 @@ impl AppState {
         match ops::new_folder(&parent, name) {
             Ok((msg, created)) => {
                 self.flash(msg);
+                self.after_load = Some(AfterLoad::Name(created));
                 self.load();
-                self.select_by_name(&created);
             }
             Err(e) => self.error = Some(e),
         }
@@ -760,7 +826,7 @@ impl AppState {
             if let Some(parent) = expanded.parent().map(Path::to_path_buf) {
                 let name = expanded.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 self.navigate(parent, true);
-                self.select_by_name(&name);
+                self.after_load = Some(AfterLoad::Name(name));
             }
         } else {
             self.error = Some(format!("Nicht gefunden: {raw}"));
@@ -860,11 +926,20 @@ impl AppState {
 
 fn compare(a: &Entry, b: &Entry, key: SortKey) -> std::cmp::Ordering {
     match key {
-        SortKey::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        SortKey::Name => cmp_ignoring_case(&a.name, &b.name),
         SortKey::Date => a.modified.cmp(&b.modified),
         SortKey::Size => a.size.cmp(&b.size),
-        SortKey::Kind => a.kind().to_lowercase().cmp(&b.kind().to_lowercase()),
+        SortKey::Kind => cmp_ignoring_case(&a.kind(), &b.kind()),
     }
+}
+
+/// Vergleich ohne Rücksicht auf Groß- und Kleinschreibung, **ohne** für jeden
+/// Vergleich zwei Strings anzulegen. Bei 50 000 Einträgen sind das sonst
+/// hunderttausende Allokationen je Sortierung.
+fn cmp_ignoring_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
 }
 
 pub fn home_dir() -> PathBuf {

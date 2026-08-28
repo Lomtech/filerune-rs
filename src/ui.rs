@@ -45,6 +45,10 @@ pub struct FileRuneApp {
     focus_filter: bool,
     /// Einmalige Prüfung nach dem Start, ob das Fenster im Bild liegt.
     checked_on_screen: bool,
+    /// Das Textfeld eines frisch geöffneten Blatts braucht einmal den Fokus —
+    /// aber nur einmal. Holte man ihn jeden Frame zurück, verlöre das Feld ihn
+    /// nie, und `lost_focus()` würde nie wahr: dann bestätigt Enter nichts.
+    sheet_needs_focus: bool,
 }
 
 impl FileRuneApp {
@@ -61,6 +65,7 @@ impl FileRuneApp {
             scroll_to: None,
             focus_filter: true,
             checked_on_screen: false,
+            sheet_needs_focus: false,
         }
     }
 
@@ -116,8 +121,15 @@ impl eframe::App for FileRuneApp {
         });
         self.state.note_window_geometry(size, pos, special);
 
+        // Fertig eingelesene Ordner und Suchergebnisse abholen.
+        if self.state.poll_scan() {
+            self.scroll_to = Some(self.state.selected_index);
+        }
         if self.state.poll_search() {
             self.scroll_to = Some(self.state.selected_index);
+        }
+        if self.state.is_loading {
+            ctx.request_repaint();
         }
         if self.state.is_searching || self.state.has_pending_flash() {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
@@ -182,9 +194,11 @@ impl FileRuneApp {
         }
         if consume(ctx, cmd_shift, Key::G) {
             self.sheet = Sheet::GoTo { text: String::new() };
+            self.sheet_needs_focus = true;
         }
         if consume(ctx, cmd_shift, Key::N) {
             self.sheet = Sheet::NewFolder { text: String::new() };
+            self.sheet_needs_focus = true;
         }
         if consume(ctx, cmd_shift, Key::D) {
             self.state.add_favorite(self.state.current_dir.clone());
@@ -235,6 +249,7 @@ impl FileRuneApp {
                     path: e.path.clone(),
                     text: e.name.clone(),
                 };
+                self.sheet_needs_focus = true;
             }
         }
         if consume(ctx, cmd, Key::C) {
@@ -564,7 +579,11 @@ impl FileRuneApp {
                 .to_string_lossy()
                 .into_owned();
 
-            if let Some(msg) = self.state.transient_message() {
+            if self.state.is_loading {
+                ui.add(egui::Spinner::new().size(11.0));
+                ui.add_space(3.0);
+                ui.label(RichText::new("Lade …").size(11.0).weak());
+            } else if let Some(msg) = self.state.transient_message() {
                 let msg = msg.to_string();
                 let green = Color32::from_rgb(52, 168, 83);
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(11.0), Sense::hover());
@@ -744,7 +763,9 @@ impl FileRuneApp {
         let row_count = self.state.view.len();
         if row_count == 0 {
             ui.centered_and_justified(|ui| {
-                let msg = if self.state.is_searching {
+                let msg = if self.state.is_loading {
+                    "Lade …"
+                } else if self.state.is_searching {
                     "Suche läuft …"
                 } else if self.state.filter.is_empty() {
                     "Dieser Ordner ist leer."
@@ -961,6 +982,7 @@ impl FileRuneApp {
                         path: e.path.clone(),
                         text: e.name.clone(),
                     };
+                    self.sheet_needs_focus = true;
                 }
             }
             Some(RowAction::CopyPath { index }) => {
@@ -1004,13 +1026,14 @@ impl FileRuneApp {
     fn show_sheet(&mut self, ctx: &egui::Context) {
         let mut close = false;
         let mut commit: Option<Sheet> = None;
+        let mut focus = self.sheet_needs_focus;
 
         match &mut self.sheet {
             Sheet::None => return,
             Sheet::Rename { path, text } => {
                 let path = path.clone();
                 let mut buffer = text.clone();
-                let submitted = sheet_window(ctx, "Umbenennen", None, "Umbenennen", &mut buffer, &mut close);
+                let submitted = sheet_window(ctx, "Umbenennen", None, "Umbenennen", &mut buffer, &mut close, &mut focus);
                 if submitted {
                     commit = Some(Sheet::Rename { path, text: buffer.clone() });
                 }
@@ -1019,7 +1042,7 @@ impl FileRuneApp {
             Sheet::GoTo { text } => {
                 let mut buffer = text.clone();
                 let submitted = sheet_window(
-                    ctx, "Gehe zu Ordner", Some("~/Developer"), "Öffnen", &mut buffer, &mut close,
+                    ctx, "Gehe zu Ordner", Some("~/Developer"), "Öffnen", &mut buffer, &mut close, &mut focus,
                 );
                 if submitted {
                     commit = Some(Sheet::GoTo { text: buffer.clone() });
@@ -1029,7 +1052,7 @@ impl FileRuneApp {
             Sheet::NewFolder { text } => {
                 let mut buffer = text.clone();
                 let submitted = sheet_window(
-                    ctx, "Neuer Ordner", Some("Neuer Ordner"), "Anlegen", &mut buffer, &mut close,
+                    ctx, "Neuer Ordner", Some("Neuer Ordner"), "Anlegen", &mut buffer, &mut close, &mut focus,
                 );
                 if submitted {
                     commit = Some(Sheet::NewFolder { text: buffer.clone() });
@@ -1037,6 +1060,8 @@ impl FileRuneApp {
                 *text = buffer;
             }
         }
+
+        self.sheet_needs_focus = focus;
 
         match commit {
             Some(Sheet::Rename { path, text }) => {
@@ -1071,6 +1096,7 @@ fn sheet_window(
     confirm: &str,
     buffer: &mut String,
     close: &mut bool,
+    needs_focus: &mut bool,
 ) -> bool {
     let mut submitted = false;
     egui::Modal::new(egui::Id::new(title)).show(ctx, |ui| {
@@ -1082,7 +1108,15 @@ fn sheet_window(
             edit = edit.hint_text(h);
         }
         let field = ui.add(edit);
-        field.request_focus();
+        // Nur einmal beim Öffnen: sonst verliert das Feld den Fokus nie, und
+        // `lost_focus()` — woran das Absenden hängt — wird nie wahr.
+        if *needs_focus {
+            field.request_focus();
+            *needs_focus = false;
+        }
+        if field.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            submitted = true;
+        }
         if field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
             submitted = true;
         }

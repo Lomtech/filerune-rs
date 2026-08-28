@@ -23,8 +23,12 @@ pub fn scan(dir: &Path, show_hidden: bool) -> std::io::Result<Vec<Entry>> {
 /// Sortierstapel des Nutzers greift.
 fn sort_default(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir.cmp(&a.is_dir).then_with(|| {
+            // Ohne Allokation je Vergleich — bei 50 000 Einträgen zählt das.
+            a.name
+                .chars()
+                .flat_map(char::to_lowercase)
+                .cmp(b.name.chars().flat_map(char::to_lowercase))
+        })
     });
 }

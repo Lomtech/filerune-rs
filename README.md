@@ -172,6 +172,15 @@ Drei Hebel, in dieser Reihenfolge wirksam:
    fehlen Treffer. Ein Test hält das fest; zwei solche Fehler steckten schon drin
    (`art:dokument` und `.app` auf Paketordnern).
 
+**Das Einlesen eines Ordners läuft nebenläufig.** 50 000 Einträge brauchen ~160 ms;
+synchron wäre das ein sichtbar eingefrorenes Fenster bei jedem Wechsel in einen
+großen Ordner. Ein noch laufendes Einlesen wird über einen Generationszähler
+entwertet, sobald weitergeklickt wurde, und eine Auswahl, die danach gesetzt
+werden soll (etwa die frisch umbenannte Datei), wartet auf das Ergebnis.
+
+Sortiert und verglichen wird ohne Allokation: `a.name.to_lowercase()` je Vergleich
+sind bei 50 000 Einträgen hunderttausende Strings pro Sortierung.
+
 Warm ist die Inhaltssuche mit ~80 ms **unabhängig vom Suchbegriff** — auch einer
 ohne einen einzigen Treffer, der jede Datei ganz durchlaufen muss, kostet nicht
 mehr. Das Suchen selbst ist damit nicht mehr der Engpass; die verbleibende Zeit

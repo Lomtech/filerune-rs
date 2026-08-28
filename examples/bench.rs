@@ -70,6 +70,43 @@ fn main() {
         println!("  {:<34} {:>8.0} ms   {read_files} Dateien, {:.0} MB", "NUR Lesen (alle Dateien)", ms, bytes as f64 / 1e6);
     }
 
+    // Großer Ordner: das Einlesen läuft synchron auf dem UI-Thread.
+    if let Ok(big) = std::env::var("BIGDIR") {
+        let big = PathBuf::from(big);
+        let t = Instant::now();
+        let entries = scanner::scan(&big, false).unwrap_or_default();
+        println!("  {:<34} {:>8.0} ms   {:>5} Einträge", "Großer Ordner einlesen", t.elapsed().as_secs_f64() * 1000.0, entries.len());
+
+        // Sortieren, wie es rebuild_view bei jedem Tastendruck tut.
+        let t = Instant::now();
+        for _ in 0..10 {
+            let mut v = entries.clone();
+            v.sort_by(|a, b| b.is_dir.cmp(&a.is_dir)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+            std::hint::black_box(&v);
+        }
+        println!("  {:<34} {:>8.0} ms   (10× klonen+sortieren)", "  davon Ansicht neu aufbauen", t.elapsed().as_secs_f64() * 1000.0);
+
+        // Nur der Vergleich, ohne Klonen — zeigt, was to_lowercase kostet.
+        let t = Instant::now();
+        for _ in 0..10 {
+            let mut v: Vec<&entry::Entry> = entries.iter().collect();
+            v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            std::hint::black_box(&v);
+        }
+        println!("  {:<34} {:>8.0} ms   (10×)", "  davon nur sortieren", t.elapsed().as_secs_f64() * 1000.0);
+
+        // Allokationsfreier Vergleich zum Gegenhalten.
+        let t = Instant::now();
+        for _ in 0..10 {
+            let mut v: Vec<&entry::Entry> = entries.iter().collect();
+            v.sort_by(|a, b| a.name.chars().flat_map(char::to_lowercase)
+                .cmp(b.name.chars().flat_map(char::to_lowercase)));
+            std::hint::black_box(&v);
+        }
+        println!("  {:<34} {:>8.0} ms   (10×)", "  sortieren ohne Allokation", t.elapsed().as_secs_f64() * 1000.0);
+    }
+
     // Sortieren: passiert bei jeder Filteränderung neu.
     let mut many: Vec<entry::Entry> = Vec::new();
     for i in 0..1000 {
