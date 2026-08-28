@@ -5,17 +5,67 @@ Kürzel, dieselbe Such- und Filterlogik. Oberfläche: [egui/eframe](https://gith
 Icons und Typografie kommen aus macOS selbst (SF Symbols, Finder-Dateisymbole,
 SF Pro/SF Mono), damit die App neben dem Original nicht auffällt.
 
+Läuft auf **macOS, Windows und Linux**. Fertige Bauten hängen an jedem
+[Release](https://github.com/Lomtech/filerune-rs/releases); wer selbst baut,
+braucht [Rust](https://rustup.rs).
+
+### macOS
+
 ```bash
 ./bundle.sh && open build/FileRune.app
 ```
 
-Läuft auf **macOS, Windows und Linux**. Unter Linux vorher die Entwicklungspakete
-für X11/Wayland installieren (die Liste steht in `.github/workflows/release.yml`),
-sonst findet winit kein Fenster-Backend.
+### Windows
+
+`bundle.sh` ist ein Bash-Skript für das macOS-Bundle und läuft hier nicht — dafür
+gibt es `bundle.ps1`. Es legt `build\FileRune.exe` ab, damit auf beiden Systemen
+derselbe Pfad herauskommt:
+
+```powershell
+.\bundle.ps1
+.\build\FileRune.exe
+```
+
+Weigert sich PowerShell mit „Die Datei kann nicht geladen werden, da die
+Ausführung von Skripts auf diesem System deaktiviert ist", dann blockiert die
+Ausführungsrichtlinie — das ist die Voreinstellung auf Windows-Clients und hat
+nichts mit dem Skript zu tun. Einmalig nur für dieses Fenster umgehen:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\bundle.ps1
+```
+
+Fest ins Benutzerprofil samt Startmenü-Eintrag (`%LOCALAPPDATA%\Programs\FileRune`):
+
+```powershell
+.\bundle.ps1 -Install
+```
+
+Ohne Skript geht es genauso — nur heißt die Datei dann nach dem Cargo-Paket,
+also klein und unter `target\`:
+
+```powershell
+cargo build --release
+.\target\release\filerune.exe
+```
+
+### Linux
+
+Erst die Entwicklungspakete für X11/Wayland, sonst findet winit kein
+Fenster-Backend (die vollständige Liste steht in `.github/workflows/release.yml`):
 
 ```bash
-cargo build --release          # Windows und Linux
-./bundle.sh                    # macOS: .app mit Icon
+sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+```
+
+```bash
+cargo build --release && ./target/release/filerune
+```
+
+Mit Startereintrag ins Benutzerprofil:
+
+```bash
+install -Dm755 target/release/filerune ~/.local/bin/filerune && install -Dm644 icon.png ~/.local/share/icons/filerune.png
 ```
 
 ### Icons
@@ -54,6 +104,7 @@ ohne Icon ausliefern.
 | `src/platform/generic.rs` | — | dieselben Symbole für Windows/Linux, selbst gezeichnet |
 | `src/state.rs` | `AppModel.swift` | Navigation, Sortierstapel, Auswahl, Favoriten |
 | `src/ui.rs` | `ContentView.swift` | Leisten, Liste, Blätter, Tastatur |
+| `bundle.sh` / `bundle.ps1` | — | App-Bundle auf macOS, `.exe` und Installation auf Windows |
 
 ## Bedienung
 
