@@ -57,6 +57,28 @@ pub fn unique_copy_name(dir: &Path, file_name: &str) -> PathBuf {
     dst
 }
 
+/// Zählt rekursiv, was in einem Ordner steckt — höchstens `cap` Einträge.
+/// Gibt (Anzahl, gedeckelt) zurück. Gedeckelt, weil die Zahl nur dazu dient,
+/// vor dem Löschen zu zeigen, wie viel daran hängt; für „mehr als 5000" muss
+/// niemand eine Minute warten.
+pub fn count_entries(path: &Path, cap: usize) -> (usize, bool) {
+    let mut count = 0usize;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else { continue };
+        for item in read.flatten() {
+            count += 1;
+            if count >= cap {
+                return (cap, true);
+            }
+            if item.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                stack.push(item.path());
+            }
+        }
+    }
+    (count, false)
+}
+
 pub fn move_to_trash(paths: &[PathBuf]) -> OpResult {
     if paths.is_empty() {
         return Ok(String::new());
@@ -165,6 +187,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn counts_entries_recursively_and_stops_at_the_cap() {
+        let d = tmpdir("count");
+        std::fs::create_dir_all(d.join("a/b")).unwrap();
+        std::fs::write(d.join("a/eins.txt"), b"x").unwrap();
+        std::fs::write(d.join("a/b/zwei.txt"), b"x").unwrap();
+        // a, a/b, a/eins.txt, a/b/zwei.txt
+        assert_eq!(count_entries(&d, 100), (4, false));
+        // Gedeckelt: meldet den Deckel und dass es mehr sind.
+        assert_eq!(count_entries(&d, 2), (2, true));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

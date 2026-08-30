@@ -227,6 +227,13 @@ zweimal und jeder Treffer erschiene doppelt.
 | `⌘⇧.` | versteckte Dateien · `⌃⌘S` Seitenleiste · `⌘R` neu laden |
 | `Esc` | Filter leeren (auch über den Löschknopf im Suchfeld) |
 
+**Ordner werden nie ohne Rückfrage gelöscht.** Dahinter können tausende Dateien
+stecken, die man in der Liste nicht sieht — die Rückfrage nennt deshalb, wie viele
+Einträge daran hängen (gezählt bis 5000, darüber „mehr als"). Einzelne Dateien
+gehen direkt in den Papierkorb: die sieht man, und der Papierkorb ist der
+Rückweg. Das ist eine bewusste Abweichung vom Original, das auch Ordner
+kommentarlos wegwirft.
+
 Der Sortierstapel ist mehrstufig: ein Klick auf eine andere Spalte schiebt die
 bisherige nach hinten, wo sie Gleichstände bricht (kleine Ziffer im Spaltenkopf).
 

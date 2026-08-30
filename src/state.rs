@@ -137,6 +137,16 @@ pub struct AppState {
     pub is_loading: bool,
 }
 
+/// Was beim Auslösen des Papierkorbs zu tun ist.
+pub enum TrashPlan {
+    /// Nichts ausgewählt.
+    Nothing,
+    /// Nur Dateien — die gehen direkt weg, sie sind in der Liste sichtbar.
+    Immediate(Vec<PathBuf>),
+    /// Mindestens ein Ordner ist dabei: erst fragen.
+    Confirm { paths: Vec<PathBuf>, summary: String },
+}
+
 /// Auswahl, die erst gesetzt werden kann, wenn die Einträge da sind.
 enum AfterLoad {
     Name(String),
@@ -874,8 +884,57 @@ impl AppState {
         }
     }
 
-    pub fn move_selection_to_trash(&mut self) {
-        let paths = self.selected_paths();
+    /// Was beim Löschen passieren soll. Ordner gehen nie ohne Rückfrage weg:
+    /// dahinter können tausende Dateien stecken, die man in der Liste nicht
+    /// sieht, und ein Tastendruck ist dafür zu wenig.
+    pub fn plan_trash(&self) -> TrashPlan {
+        let entries: Vec<&Entry> = self.selected_entries();
+        if entries.is_empty() {
+            return TrashPlan::Nothing;
+        }
+        let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
+        let folders: Vec<&&Entry> = entries.iter().filter(|e| e.is_dir).collect();
+        if folders.is_empty() {
+            return TrashPlan::Immediate(paths);
+        }
+
+        // Zählen, was an den Ordnern hängt — gedeckelt, damit die Rückfrage
+        // sofort kommt und nicht erst nach einem Tiefenscan.
+        const CAP: usize = 5000;
+        let mut total = 0usize;
+        let mut capped = false;
+        for f in &folders {
+            let (n, hit_cap) = ops::count_entries(&f.path, CAP - total.min(CAP));
+            total += n;
+            capped |= hit_cap;
+            if total >= CAP {
+                capped = true;
+                break;
+            }
+        }
+        let amount = if capped {
+            format!("mehr als {total} Einträgen")
+        } else if total == 1 {
+            "einem Eintrag".to_string()
+        } else {
+            format!("{total} Einträgen")
+        };
+
+        let summary = if entries.len() == 1 {
+            format!("Ordner „{}“ mit {amount}", folders[0].name)
+        } else if folders.len() == entries.len() {
+            format!("{} Ordner mit zusammen {amount}", folders.len())
+        } else {
+            format!(
+                "{} Objekte, darunter {} Ordner mit zusammen {amount}",
+                entries.len(),
+                folders.len()
+            )
+        };
+        TrashPlan::Confirm { paths, summary }
+    }
+
+    pub fn trash_paths(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }

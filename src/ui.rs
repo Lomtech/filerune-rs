@@ -32,6 +32,8 @@ pub enum Sheet {
     Rename { path: PathBuf, text: String },
     GoTo { text: String },
     NewFolder { text: String },
+    /// Rückfrage vor dem Löschen von Ordnern.
+    ConfirmTrash { paths: Vec<PathBuf>, summary: String },
 }
 
 pub struct FileRuneApp {
@@ -241,7 +243,7 @@ impl FileRuneApp {
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, cmd, Key::Backspace) || consume(ctx, cmd, Key::Delete) {
-            self.state.move_selection_to_trash();
+            self.request_trash();
         }
         if consume(ctx, cmd, Key::Enter) {
             if let Some(e) = self.state.selected_entry() {
@@ -335,6 +337,17 @@ impl FileRuneApp {
 
         // Navigation leert den Filter — das Feld muss das mitbekommen.
         self.filter_text = self.state.filter.clone();
+    }
+
+    /// Löschen anfordern: Dateien gehen sofort, Ordner erst nach Rückfrage.
+    fn request_trash(&mut self) {
+        match self.state.plan_trash() {
+            crate::state::TrashPlan::Nothing => {}
+            crate::state::TrashPlan::Immediate(paths) => self.state.trash_paths(paths),
+            crate::state::TrashPlan::Confirm { paths, summary } => {
+                self.sheet = Sheet::ConfirmTrash { paths, summary };
+            }
+        }
     }
 
     /// Im Blatt gilt nur Abbrechen — alles andere ist Texteingabe.
@@ -1013,7 +1026,7 @@ impl FileRuneApp {
             }
             Some(RowAction::Trash { index }) => {
                 self.state.select_only(index);
-                self.state.move_selection_to_trash();
+                self.request_trash();
             }
             None => {}
         }
@@ -1069,6 +1082,45 @@ impl FileRuneApp {
                 }
                 *text = buffer;
             }
+            Sheet::ConfirmTrash { paths, summary } => {
+                let paths = paths.clone();
+                let summary = summary.clone();
+                let mut confirmed = false;
+                egui::Modal::new(egui::Id::new("papierkorb")).show(ctx, |ui| {
+                    ui.set_width(360.0);
+                    ui.label(RichText::new("In den Papierkorb legen?").size(13.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&summary).size(12.0));
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Wiederherstellen geht über den Papierkorb.")
+                            .size(11.0)
+                            .weak(),
+                    );
+                    ui.add_space(12.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let danger = Color32::from_rgb(200, 62, 52);
+                        if ui
+                            .add(egui::Button::new(
+                                RichText::new("In den Papierkorb").color(Color32::WHITE),
+                            ).fill(danger))
+                            .clicked()
+                        {
+                            confirmed = true;
+                        }
+                        if ui.button("Abbrechen").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                // Enter bestätigt, Escape bricht ab (Escape erledigt handle_sheet_keys).
+                if ctx.input(|i| i.key_pressed(Key::Enter)) {
+                    confirmed = true;
+                }
+                if confirmed {
+                    commit = Some(Sheet::ConfirmTrash { paths, summary });
+                }
+            }
         }
 
         self.sheet_needs_focus = focus;
@@ -1086,6 +1138,10 @@ impl FileRuneApp {
             Some(Sheet::NewFolder { text }) => {
                 self.state.new_folder(&text);
                 self.scroll_to = Some(self.state.selected_index);
+                close = true;
+            }
+            Some(Sheet::ConfirmTrash { paths, .. }) => {
+                self.state.trash_paths(paths);
                 close = true;
             }
             _ => {}

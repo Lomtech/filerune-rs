@@ -7,7 +7,7 @@ APP_NAME="FileRune"
 # Eigene Bundle-ID: die SwiftUI-Fassung benutzt com.lom.flyfiles, und beide
 # sollen getrennte Einstellungen und TCC-Berechtigungen behalten.
 BUNDLE_ID="com.lom.filerune-rs"
-VERSION="0.1.2"
+VERSION="0.1.3"
 BUNDLE="build/${APP_NAME}.app"
 
 # In der CI kommt das (dann universelle) Binary fertig herein; lokal bauen wir.
