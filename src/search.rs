@@ -11,6 +11,7 @@ use crate::filter::ColumnFilter;
 use crate::fuzzy;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use walkdir::WalkDir;
 
@@ -126,6 +127,10 @@ pub fn local_matches(query: &Query, entries: &[Entry]) -> Vec<Entry> {
 }
 
 /// Der Tiefenscan. Bricht ab, sobald `generation` nicht mehr `my_gen` ist.
+/// `progress` bekommt Teilergebnisse, sobald ein Unterbaum fertig ist — dann
+/// steht die erste Zeile nach Millisekunden statt erst am Ende des ganzen
+/// Durchlaufs. Ab /Users dauert der komplett rund eine halbe Sekunde, und so
+/// lange auf ein leeres Fenster zu sehen wirkt langsamer, als es ist.
 pub fn search(
     root: &Path,
     query: &Query,
@@ -133,6 +138,7 @@ pub fn search(
     limit: usize,
     generation: &Arc<AtomicU64>,
     my_gen: u64,
+    progress: Option<&Sender<Vec<Entry>>>,
 ) -> Vec<Entry> {
     let cancelled = || generation.load(Ordering::Relaxed) != my_gen;
 
@@ -146,6 +152,13 @@ pub fn search(
         return Vec::new();
     }
 
+    // Was schon beim Aufklappen gefunden wurde, sofort melden.
+    if let Some(tx) = progress {
+        if !collected.is_empty() {
+            let _ = tx.send(collected.iter().map(|(e, _)| e.clone()).collect());
+        }
+    }
+
     // Ein Arbeiter je Kern zieht sich Unterbäume aus einer gemeinsamen Warteschlange.
     let next = AtomicUsize::new(0);
     let active = workers.min(dirs.len().max(1));
@@ -155,6 +168,8 @@ pub fn search(
             .map(|_| {
                 let next = &next;
                 let dirs = &dirs;
+                // Jeder Arbeiter bekommt seinen eigenen Absender.
+                let tx = progress.cloned();
                 scope.spawn(move || {
                     let mut out: Vec<(Entry, i32)> = Vec::new();
                     loop {
@@ -163,7 +178,13 @@ pub fn search(
                         if cancelled() {
                             break;
                         }
-                        out.extend(walk(dir, query, show_hidden, root, limit, &cancelled));
+                        let part = walk(dir, query, show_hidden, root, limit, &cancelled);
+                        if let Some(tx) = &tx {
+                            if !part.is_empty() && !cancelled() {
+                                let _ = tx.send(part.iter().map(|(e, _)| e.clone()).collect());
+                            }
+                        }
+                        out.extend(part);
                     }
                     out
                 })
@@ -348,7 +369,7 @@ mod tests {
 
     fn run(root: &Path, query: Query) -> Vec<Entry> {
         let generation = Arc::new(AtomicU64::new(7));
-        search(root, &query, false, 1000, &generation, 7)
+        search(root, &query, false, 1000, &generation, 7, None)
     }
 
     /// Jeder Pfad darf höchstens einmal vorkommen. Vorher lief der Unterbaum

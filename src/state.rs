@@ -89,6 +89,12 @@ pub struct AppState {
     pub is_searching: bool,
     /// Läuft gerade auch eine Suche im Dateiinhalt?
     pub searching_contents: bool,
+    /// Der Namensdurchgang ist fertig, die Inhaltssuche läuft noch.
+    pub names_done: bool,
+    /// Hat der Nutzer den Cursor selbst bewegt? Solange nicht, bleibt er beim
+    /// Nachliefern von Treffern oben stehen, statt mit der wachsenden Liste
+    /// nach unten zu wandern.
+    pub user_moved_selection: bool,
 
     pub selected_index: usize,
     pub selection: HashSet<PathBuf>,
@@ -118,8 +124,8 @@ pub struct AppState {
     geometry_dirty_since: Option<Instant>,
 
     generation: Arc<AtomicU64>,
-    search_tx: Sender<(u64, Vec<Entry>)>,
-    search_rx: Receiver<(u64, Vec<Entry>)>,
+    search_tx: Sender<SearchBatch>,
+    search_rx: Receiver<SearchBatch>,
 
     /// Das Einlesen läuft auf einem eigenen Thread: 50 000 Einträge dauern
     /// ~180 ms, und die hätte man sonst als eingefrorenes Fenster.
@@ -135,6 +141,22 @@ pub struct AppState {
 enum AfterLoad {
     Name(String),
     Index(usize),
+}
+
+/// Eine Lieferung der Hintergrundsuche.
+struct SearchBatch {
+    generation: u64,
+    entries: Vec<Entry>,
+    kind: BatchKind,
+}
+
+enum BatchKind {
+    /// Teilergebnis eines fertigen Unterbaums — wird angehängt, damit die
+    /// ersten Zeilen sofort dastehen.
+    Partial,
+    /// Ende eines Durchgangs: ersetzt die Liste durch die endgültigen,
+    /// nach Rang gekürzten Treffer. Nur der letzte Durchgang beendet die Suche.
+    Complete { last: bool },
 }
 
 struct ScanResult {
@@ -182,6 +204,8 @@ impl AppState {
             column_filtered: false,
             is_searching: false,
             searching_contents: false,
+            names_done: false,
+            user_moved_selection: false,
             selected_index: 0,
             selection: HashSet::new(),
             anchor_index: 0,
@@ -302,6 +326,7 @@ impl AppState {
         if self.filter.is_empty() {
             self.is_searching = false;
             self.searching_contents = false;
+            self.names_done = false;
             self.search_results.clear();
             self.rebuild_view();
             self.reset_selection_to_top();
@@ -336,6 +361,8 @@ impl AppState {
             ),
         };
         self.searching_contents = with_contents && !self.column_filtered;
+        self.names_done = false;
+        self.user_moved_selection = false;
 
         // Sofort: Treffer im aktuellen Ordner …
         self.search_results = search::local_matches(&instant, &self.all_entries);
@@ -359,9 +386,64 @@ impl AppState {
             if generation.load(Ordering::SeqCst) != gen {
                 return;
             }
-            let hits = search::search(&root, &query, hidden, SEARCH_LIMIT, &generation, gen);
+
+            // Teilergebnisse fließen laufend herein, damit die ersten Zeilen
+            // nach Millisekunden dastehen statt erst am Ende.
+            let (part_tx, part_rx) = channel::<Vec<Entry>>();
+            let pump = {
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    while let Ok(entries) = part_rx.recv() {
+                        let _ = tx.send(SearchBatch {
+                            generation: gen,
+                            entries,
+                            kind: BatchKind::Partial,
+                        });
+                    }
+                })
+            };
+
+            // ZWEI Durchgänge, wenn Inhalte gesucht werden. Der erste sucht nur
+            // Namen und ist um ein Vielfaches schneller: ab /Users sind das
+            // ~0,5 s gegen ~2 s. Vorher hingen die Namenstreffer an der
+            // Inhaltssuche und erschienen erst mit ihr zusammen — die Suche
+            // wirkte dadurch viel langsamer, als sie ist.
+            let searches_content = matches!(query, Query::Name { contents: true, .. });
+            if searches_content {
+                let names_only = match &query {
+                    Query::Name { needle, .. } => Query::Name {
+                        needle: needle.clone(),
+                        contents: false,
+                    },
+                    other => other.clone(),
+                };
+                let hits = search::search(
+                    &root, &names_only, hidden, SEARCH_LIMIT, &generation, gen, Some(&part_tx),
+                );
+                if generation.load(Ordering::SeqCst) != gen {
+                    return;
+                }
+                let _ = tx.send(SearchBatch {
+                    generation: gen,
+                    entries: hits,
+                    kind: BatchKind::Complete { last: false },
+                });
+            }
+
+            let hits = search::search(
+                &root, &query, hidden, SEARCH_LIMIT, &generation, gen,
+                // Im Inhaltsdurchgang stehen die Namenstreffer schon; laufend
+                // nachliefern lohnt trotzdem, weil er lange dauert.
+                Some(&part_tx),
+            );
+            drop(part_tx);
+            let _ = pump.join();
             if generation.load(Ordering::SeqCst) == gen {
-                let _ = tx.send((gen, hits));
+                let _ = tx.send(SearchBatch {
+                    generation: gen,
+                    entries: hits,
+                    kind: BatchKind::Complete { last: true },
+                });
             }
         });
     }
@@ -369,14 +451,44 @@ impl AppState {
     /// Holt fertige Suchergebnisse ab. `true`, wenn sich die Liste geändert hat.
     pub fn poll_search(&mut self) -> bool {
         let mut changed = false;
-        while let Ok((gen, hits)) = self.search_rx.try_recv() {
-            if gen != self.generation.load(Ordering::SeqCst) {
+        while let Ok(batch) = self.search_rx.try_recv() {
+            if batch.generation != self.generation.load(Ordering::SeqCst) {
                 continue; // veraltet — eine neuere Suche läuft bereits
             }
-            self.search_results = hits;
-            self.is_searching = false;
+            // Auswahl nur festhalten, wenn der Nutzer sie selbst gesetzt hat.
+            // Sonst bliebe der Cursor am automatisch gewählten ersten Treffer
+            // kleben und wanderte mit der wachsenden Liste nach unten — die
+            // Ansicht scrollte dann von allein weg.
+            let previously = if self.user_moved_selection {
+                self.selected_entry().map(|e| e.path.clone())
+            } else {
+                None
+            };
+
+            match batch.kind {
+                BatchKind::Partial => {
+                    // Anhängen und Dubletten fernhalten: derselbe Pfad kann aus
+                    // dem Aufklappen und aus einem Unterbaum kommen.
+                    let known: std::collections::HashSet<PathBuf> =
+                        self.search_results.iter().map(|e| e.path.clone()).collect();
+                    self.search_results
+                        .extend(batch.entries.into_iter().filter(|e| !known.contains(&e.path)));
+                    self.search_results.truncate(SEARCH_LIMIT);
+                }
+                BatchKind::Complete { last } => {
+                    // Der Durchgang ist fertig: die endgültige, nach Rang
+                    // gekürzte Liste ersetzt die zusammengetragene.
+                    self.search_results = batch.entries;
+                    self.is_searching = !last;
+                    self.names_done = !last;
+                }
+            }
             self.rebuild_view();
-            self.reset_selection_to_top();
+
+            match previously.and_then(|p| self.view.iter().position(|e| e.path == p)) {
+                Some(idx) => self.select_only(idx),
+                None => self.reset_selection_to_top(),
+            }
             changed = true;
         }
         changed

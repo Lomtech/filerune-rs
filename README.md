@@ -187,6 +187,23 @@ mehr. Das Suchen selbst ist damit nicht mehr der Engpass; die verbleibende Zeit
 ist Plattenzugriff. Zum Vergleich: dieselben Dateien einmal einlesen, ohne jede
 Suche und einzeln statt parallel, dauert 1050 ms.
 
+### Warum sich die Suche schnell anfühlt
+
+Ab `/Users` liegen 6,7 GB in 36 000 Dateien. Ein vollständiger Inhaltsdurchgang
+dauert dort ~1,9 s, und daran lässt sich wenig ändern — dieselbe Suche kostet
+kalt wie warm gleich viel, weil das nicht mehr in den Dateicache passt. Was sich
+ändern lässt, ist, **wann man etwas sieht**:
+
+- **Teillieferungen.** Jeder Arbeiter meldet seine Treffer, sobald ein Unterbaum
+  fertig ist, statt bis zum Ende zu sammeln. Die erste Zeile steht nach **~10 ms**.
+- **Zwei Durchgänge.** Erst nur Namen (~0,4 s), dann die Inhalte (~1,9 s). Vorher
+  erledigte ein Durchgang beides und lieferte am Ende — die Namenstreffer hingen
+  also an der Inhaltssuche und erschienen erst mit ihr zusammen. Genau das ließ
+  die Suche viel langsamer wirken, als sie ist.
+- Der Cursor bleibt beim Nachliefern oben stehen, solange man ihn nicht selbst
+  bewegt hat. Sonst wanderte er mit der wachsenden Liste nach unten und die
+  Ansicht scrollte von allein weg.
+
 ### Parallelität
 
 Ein Arbeiter je Kern zieht sich Unterbäume aus einer gemeinsamen Warteschlange.

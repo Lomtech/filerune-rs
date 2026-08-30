@@ -125,7 +125,7 @@ impl eframe::App for FileRuneApp {
         if self.state.poll_scan() {
             self.scroll_to = Some(self.state.selected_index);
         }
-        if self.state.poll_search() {
+        if self.state.poll_search() && self.state.user_moved_selection {
             self.scroll_to = Some(self.state.selected_index);
         }
         if self.state.is_loading {
@@ -270,34 +270,42 @@ impl FileRuneApp {
 
         // Listennavigation ohne Zusatztaste.
         if consume(ctx, shift, Key::ArrowUp) {
+            self.state.user_moved_selection = true;
             self.state.extend_selection(-1);
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, shift, Key::ArrowDown) {
+            self.state.user_moved_selection = true;
             self.state.extend_selection(1);
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, Modifiers::NONE, Key::ArrowUp) {
+            self.state.user_moved_selection = true;
             self.state.move_selection(-1);
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, Modifiers::NONE, Key::ArrowDown) {
+            self.state.user_moved_selection = true;
             self.state.move_selection(1);
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, Modifiers::NONE, Key::PageUp) {
+            self.state.user_moved_selection = true;
             self.state.move_selection(-PAGE_JUMP);
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, Modifiers::NONE, Key::PageDown) {
+            self.state.user_moved_selection = true;
             self.state.move_selection(PAGE_JUMP);
             self.scroll_to = Some(self.state.selected_index);
         }
         if consume(ctx, Modifiers::NONE, Key::Home) {
+            self.state.user_moved_selection = true;
             self.state.select_edge(true);
             self.scroll_to = Some(0);
         }
         if consume(ctx, Modifiers::NONE, Key::End) {
+            self.state.user_moved_selection = true;
             self.state.select_edge(false);
             self.scroll_to = Some(self.state.selected_index);
         }
@@ -597,14 +605,15 @@ impl FileRuneApp {
                         .color(Color32::from_rgb(220, 76, 62)),
                 );
             } else if !self.state.filter.is_empty() {
-                let suffix = if self.state.is_searching {
-                    if self.state.searching_contents {
-                        " · suche Name und Inhalt…"
-                    } else {
-                        " · suche…"
-                    }
-                } else {
+                let suffix = if !self.state.is_searching {
                     ""
+                } else if self.state.names_done {
+                    // Namen stehen schon, die Inhaltssuche läuft noch nach.
+                    " · suche noch in Inhalten…"
+                } else if self.state.searching_contents {
+                    " · suche Namen…"
+                } else {
+                    " · suche…"
                 };
                 let text = if self.state.column_filtered {
                     format!("{shown} gefiltert{suffix} · rekursiv ab {folder}")
@@ -960,6 +969,7 @@ impl FileRuneApp {
     fn apply_row_action(&mut self, action: Option<RowAction>) {
         match action {
             Some(RowAction::Click { index, modifiers }) => {
+                self.state.user_moved_selection = true;
                 if modifiers.shift {
                     self.state.range_select(index);
                 } else if modifiers.command {

@@ -18,7 +18,7 @@ use search::Query;
 fn bench(label: &str, root: &PathBuf, query: Query) {
     let gen = Arc::new(AtomicU64::new(1));
     let t = Instant::now();
-    let hits = search::search(root, &query, false, 1000, &gen, 1);
+    let hits = search::search(root, &query, false, 1000, &gen, 1, None);
     println!("  {label:<34} {:>8.0} ms   {:>5} Treffer", t.elapsed().as_secs_f64() * 1000.0, hits.len());
 }
 
