@@ -15,6 +15,17 @@ braucht [Rust](https://rustup.rs).
 ./bundle.sh && open build/FileRune.app
 ```
 
+Damit liegt die App in `build/` — praktisch zum Ausprobieren, aber **Spotlight und
+Launchpad finden sie dort nicht**: ein Projektordner ist kein Ort, an dem macOS nach
+Programmen sucht. Zum festen Installieren nach `/Applications`, samt Anmeldung bei
+LaunchServices:
+
+```bash
+./bundle.sh --install
+```
+
+Deinstallieren ist dann `rm -rf /Applications/FileRune.app`.
+
 ### Windows
 
 `bundle.sh` ist ein Bash-Skript für das macOS-Bundle und läuft hier nicht — dafür

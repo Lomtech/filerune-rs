@@ -3,6 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# --install kopiert zusätzlich nach /Applications. Ohne das kennt Spotlight die
+# App nicht: ein Build-Verzeichnis ist kein Ort, an dem macOS nach Programmen
+# sucht — und ein Projektordner ist oft gar nicht indexiert.
+INSTALL=0
+for a in "$@"; do
+  [[ "$a" == "--install" ]] && INSTALL=1
+done
+
 APP_NAME="FileRune"
 # Eigene Bundle-ID: die SwiftUI-Fassung benutzt com.lom.flyfiles, und beide
 # sollen getrennte Einstellungen und TCC-Berechtigungen behalten.
@@ -58,4 +66,35 @@ codesign --force --deep --sign - "${BUNDLE}" 2>/dev/null || true
 touch "${BUNDLE}"
 
 echo "✓ ${BUNDLE}  (v${VERSION})"
-echo "  Starten mit:  open ${BUNDLE}"
+
+if [[ "${INSTALL}" -eq 1 ]]; then
+  # /Applications gehört der Gruppe admin und ist dort ohne sudo beschreibbar;
+  # sonst weicht die Installation auf ~/Applications aus, das macOS ebenso kennt.
+  if [[ -w /Applications ]]; then
+    DEST="/Applications"
+  else
+    DEST="${HOME}/Applications"
+    mkdir -p "${DEST}"
+  fi
+  TARGET="${DEST}/${APP_NAME}.app"
+
+  if pgrep -f "${TARGET}/Contents/MacOS/" > /dev/null 2>&1; then
+    echo "✗ ${APP_NAME} läuft gerade aus ${DEST} — erst beenden, dann erneut." >&2
+    exit 1
+  fi
+
+  rm -rf "${TARGET}"
+  cp -R "${BUNDLE}" "${TARGET}"
+  # Bei LaunchServices anmelden und Spotlight anstoßen, sonst taucht die App
+  # erst nach dem nächsten Indexlauf in der Suche auf.
+  LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  [[ -x "${LSREG}" ]] && "${LSREG}" -f "${TARGET}" 2>/dev/null || true
+  mdimport "${TARGET}" 2>/dev/null || true
+
+  echo "✓ installiert nach ${TARGET}"
+  echo "  Findet sich jetzt über Spotlight (⌘Leertaste) und im Launchpad."
+  echo "  Deinstallieren: rm -rf \"${TARGET}\""
+else
+  echo "  Starten mit:   open ${BUNDLE}"
+  echo "  Installieren:  ./bundle.sh --install"
+fi
