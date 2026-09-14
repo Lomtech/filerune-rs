@@ -57,24 +57,27 @@ pub fn find(path: &Path, size: u64, needle: &str) -> Option<String> {
     let at = if needle.is_ascii() {
         find_ascii_ci(&bytes, needle.as_bytes())?
     } else {
-        // Umlaute und dergleichen brauchen echte Unicode-Kleinschreibung;
-        // dafür nehmen wir den langsameren Weg in Kauf.
+        // Umlaute und dergleichen brauchen echte Unicode-Kleinschreibung. Die
+        // kostet eine kleingeschriebene Fassung der ganzen Datei — dafür läuft
+        // darüber dieselbe Puffersuche wie oben, statt jede Zeile einzeln
+        // kleinzuschreiben und wieder wegzuwerfen.
         let text = String::from_utf8_lossy(&bytes);
         let lower = text.to_lowercase();
-        // Position im kleingeschriebenen Text ist nicht die im Original, wenn
-        // sich die Bytelänge ändert (ẞ→ss). Deshalb hier zeilenweise.
-        for (i, line) in text.lines().enumerate() {
-            let line_lower = line.to_lowercase();
-            if let Some(at) = line_lower.find(needle) {
-                return Some(format!(
-                    "Zeile {}: {}",
-                    i + 1,
-                    snippet(line, &line_lower, at, needle.len())
-                ));
-            }
-        }
-        let _ = lower;
-        return None;
+        let at = memchr::memmem::find(lower.as_bytes(), needle.as_bytes())?;
+        // Bytepositionen aus `lower` passen nicht auf `text`, wenn sich beim
+        // Kleinschreiben die Länge ändert (ẞ→ss). Zeilenumbrüche entstehen und
+        // verschwinden dabei aber nicht: Zeile N ist in beiden dieselbe Zeile.
+        let line_no = lower.as_bytes()[..at].iter().filter(|b| **b == b'\n').count() + 1;
+        let line = text.lines().nth(line_no - 1).unwrap_or("");
+        let line_lower = lower.lines().nth(line_no - 1).unwrap_or("");
+        // Über einen Zeilenumbruch hinweg gefunden (geht nur, wenn der
+        // Suchbegriff selbst einen enthält): dann gibt es in der Zeile keine
+        // Fundstelle zu markieren, der Zeilenanfang muss reichen.
+        let (in_line, len) = match line_lower.find(needle) {
+            Some(i) => (i, needle.len()),
+            None => (0, 0),
+        };
+        return Some(format!("Zeile {line_no}: {}", snippet(line, line_lower, in_line, len)));
     };
 
     // Fundstelle gefunden: erst jetzt Zeilennummer und Ausschnitt bestimmen.
@@ -158,7 +161,9 @@ fn snippet(line: &str, lower: &str, byte_at: usize, needle_len: usize) -> String
 
     // Etwas Vorlauf, damit die Fundstelle im Zusammenhang steht.
     let lead = SNIPPET_CHARS / 3;
-    let from = start_char.saturating_sub(lead);
+    // `lower` kann mehr Zeichen haben als `line` (ẞ→ss) — ohne die Klammer
+    // liefe `chars.len() - from` weiter unten unter und der Zugriff panickt.
+    let from = start_char.saturating_sub(lead).min(chars.len());
     let to = (from + SNIPPET_CHARS).min(chars.len());
 
     let mut out = String::new();
@@ -241,5 +246,34 @@ mod tests {
         let p = tmp("e.txt", &long);
         let hit = find(&p, std::fs::metadata(&p).unwrap().len(), "nadel").unwrap();
         assert!(hit.contains("Nadel"), "{hit}");
+    }
+
+    /// Ein Suchbegriff mit Umlaut läuft über den anderen Pfad: kleingeschriebene
+    /// Fassung der ganzen Datei plus Puffersuche. Zeilennummer und
+    /// Originalschreibweise müssen trotzdem stimmen.
+    #[test]
+    fn finds_non_ascii_needle_with_correct_line() {
+        let p = tmp("f.txt", "Höhe und Länge\nnichts\ndie Größe steht hier\nzuletzt\n");
+        let hit = find(&p, std::fs::metadata(&p).unwrap().len(), "größe").unwrap();
+        assert!(hit.starts_with("Zeile 3:"), "{hit}");
+        // Der Ausschnitt zeigt die Datei, nicht die kleingeschriebene Fassung.
+        assert!(hit.contains("Größe"), "{hit}");
+    }
+
+    /// Kleinschreiben kann die Bytelänge ändern (ẞ→ß). Die Zeile wird deshalb
+    /// über gezählte Umbrüche bestimmt und nicht über Bytepositionen — mit
+    /// Bytearithmetik ginge dieser Fall daneben.
+    #[test]
+    fn non_ascii_line_survives_length_changing_case() {
+        let p = tmp("g.txt", "STRAẞE\nkeine\ndie Größe steht hier\n");
+        let hit = find(&p, std::fs::metadata(&p).unwrap().len(), "größe").unwrap();
+        assert!(hit.starts_with("Zeile 3:"), "{hit}");
+        assert!(hit.contains("Größe"), "{hit}");
+    }
+
+    #[test]
+    fn non_ascii_needle_without_match_returns_none() {
+        let p = tmp("h.txt", "nur ASCII hier drin\nund noch eine Zeile\n");
+        assert!(find(&p, std::fs::metadata(&p).unwrap().len(), "größe").is_none());
     }
 }

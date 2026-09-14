@@ -44,6 +44,9 @@ fn main() {
     bench("Inhalt: \"Papierkorb\" (warm)", &root, Query::Name { needle: "Papierkorb".into(), contents: true });
     bench("Inhalt: \"fn main\" (warm)", &root, Query::Name { needle: "fn main".into(), contents: true });
     bench("Inhalt: \"qqzxj\" (warm, 0 Treffer)", &root, Query::Name { needle: "qqzxj".into(), contents: true });
+    // Umlaut im Suchbegriff nimmt den anderen Pfad in content::find — der
+    // stand lange auf zeilenweisem Kleinschreiben und war deutlich langsamer.
+    bench("Inhalt: \"Größe\" (warm, nicht-ASCII)", &root, Query::Name { needle: "Größe".into(), contents: true });
 
     // Aufteilung: wie viel ist Lesen von der Platte, wie viel Suchen?
     {
