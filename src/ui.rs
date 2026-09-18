@@ -502,6 +502,10 @@ impl FileRuneApp {
                             )
                             .font(egui::FontId::proportional(13.0))
                             .frame(egui::Frame::NONE)
+                            // Ohne das legt egui den Text oben ins Feld: das
+                            // Feld ist 24 px hoch, die Zeile nur ~16. Text und
+                            // Cursor saßen dann höher als Lupe und Löschknopf.
+                            .vertical_align(egui::Align::Center)
                             .desired_width(f32::INFINITY),
                     )
                 })
