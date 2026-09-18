@@ -79,6 +79,35 @@ Mit Startereintrag ins Benutzerprofil:
 install -Dm755 target/release/filerune ~/.local/bin/filerune && install -Dm644 icon.png ~/.local/share/icons/filerune.png
 ```
 
+### Farben: Golgari
+
+FileRune trägt das Golgari-Theme der eigenen Zed-Familie „Mana Guilds"
+(`~/.config/zed/themes/mana-guilds.json`), damit es zum Editor daneben passt —
+statt der blauen macOS-Akzentfarbe. Die Werte stehen in `src/theme.rs`.
+
+In Zed ist Golgari ein Zweiklang aus Grün (Funktionen, Titel) und Lila (Strings,
+Cursor) auf neutralem Grund mit mauve-grauem Rahmen. Hier **führt das Grün** —
+Auswahl, aktive Knöpfe, Sortierspalte, Ordnersymbole —, das Lila bleibt für die
+Fundstellen der Inhaltssuche und die Schreibmarke. Die Liste selbst ist neutral
+`#fafafa`, wie in allen zehn Gilden: Tönung hinter Schrift stört.
+
+Drei Abweichungen vom Zed-Theme, jede begründet:
+
+- **Nebeninformationen** (Datum, Größe, Art) in `text.muted` statt der blassen
+  Stufe: `#788c99` hat auf der Liste nur 3,35:1, für 11 pt zu wenig. Zed nimmt
+  für so etwas selbst `text.muted`.
+- **Bestätigungen** in der Statuszeile im tiefen Grün `#00441f`: das Akzentgrün
+  schafft auf der dunkleren Statusleiste nur 4,15:1.
+- **Fehler** in Rot statt im Lila, das Golgari dafür vorsieht — ein Fehler, der
+  nicht nach Fehler aussieht, wird übersehen.
+
+Ein Test in `src/theme.rs` prüft genau die Farbpaare, die in der Oberfläche
+vorkommen, auf mindestens 4,5:1.
+
+Die **Ordnersymbole** bleiben die echten von macOS, nur ihr Farbton wird auf
+Golgari-Grün gedreht — Form, Kanten und Schattierung sind original. Pakete wie
+`.app` und Dateisymbole behalten ihre eigene Farbe.
+
 ### Icons
 
 Drei Dateien, drei Zwecke — alle aus dem Original übernommen:

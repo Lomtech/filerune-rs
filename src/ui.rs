@@ -56,8 +56,11 @@ pub struct FileRuneApp {
 impl FileRuneApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::platform::install_fonts(&cc.egui_ctx);
-        let accent = crate::platform::system_accent();
-        install_style(&cc.egui_ctx, accent);
+        // Feste Golgari-Palette statt der macOS-Akzentfarbe: die war blau, und
+        // FileRune soll zum Golgari-Theme im Editor daneben passen.
+        let accent = crate::theme::GOLGARI.accent;
+        crate::theme::apply(&cc.egui_ctx, &crate::theme::GOLGARI);
+        install_style(&cc.egui_ctx);
         FileRuneApp {
             state: AppState::new(),
             sheet: Sheet::None,
@@ -145,18 +148,39 @@ impl eframe::App for FileRuneApp {
 
         // Reihenfolge zählt: zuerst hinzugefügte Panels liegen außen, das
         // CentralPanel muss zuletzt kommen.
+        // Flächen wie im Golgari-Theme von Zed: Pfadleiste = Tab-Leiste,
+        // Filterleiste = Toolbar, Liste = Editor (neutral, weil Tönung hinter
+        // Schrift stört), Statuszeile = Statusleiste.
+        //
+        // Nur die FÜLLFARBE wird getauscht. Die Rahmen selbst sind egui's
+        // Standard (Leisten 8/2, Liste 8) — die erste Fassung setzte eigene
+        // Rahmen mit 4 px und die Seitenleiste ganz ohne Rand, und damit
+        // verrutschte die ganze Oberfläche. Ein Theme ändert Farben, keine
+        // Geometrie.
+        let t = &crate::theme::GOLGARI;
+        let bar = |c: Color32| egui::Frame::side_top_panel(ui.style()).fill(c);
+        let sidebar_frame = bar(t.surface);
+        let path_frame = bar(t.surface);
+        let filter_frame = bar(t.toolbar);
+        let header_frame = bar(t.canvas);
+        let status_frame = bar(t.bar);
+        let list_frame = egui::Frame::central_panel(ui.style()).fill(t.canvas);
+
         if self.state.show_sidebar {
             egui::Panel::left("sidebar")
                 .exact_size(SIDEBAR_WIDTH)
                 .resizable(false)
+                .frame(sidebar_frame)
                 .show(ui, |ui| self.sidebar(ui));
         }
 
-        egui::Panel::top("pathbar").show(ui, |ui| self.path_bar(ui));
-        egui::Panel::top("filterbar").show(ui, |ui| self.filter_bar(ui));
-        egui::Panel::top("listheader").show(ui, |ui| self.list_header(ui));
-        egui::Panel::bottom("statusbar").show(ui, |ui| self.status_bar(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.list(ui));
+        egui::Panel::top("pathbar").frame(path_frame).show(ui, |ui| self.path_bar(ui));
+        egui::Panel::top("filterbar").frame(filter_frame).show(ui, |ui| self.filter_bar(ui));
+        egui::Panel::top("listheader").frame(header_frame).show(ui, |ui| self.list_header(ui));
+        egui::Panel::bottom("statusbar").frame(status_frame).show(ui, |ui| self.status_bar(ui));
+        egui::CentralPanel::default()
+            .frame(list_frame)
+            .show(ui, |ui| self.list(ui));
 
         self.show_sheet(&ctx);
 
@@ -539,7 +563,7 @@ impl FileRuneApp {
         let color = if active {
             self.accent
         } else {
-            ui.visuals().weak_text_color()
+            crate::theme::GOLGARI.text_muted
         };
         // Rang im Sortierstapel: Gleichstand-Brecher bekommen eine kleine Ziffer.
         let rank = self
@@ -606,7 +630,7 @@ impl FileRuneApp {
                 ui.label(RichText::new("Lade …").size(11.0).weak());
             } else if let Some(msg) = self.state.transient_message() {
                 let msg = msg.to_string();
-                let green = Color32::from_rgb(52, 168, 83);
+                let green = crate::theme::GOLGARI.success;
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(11.0), Sense::hover());
                 self.draw_symbol(ui, "checkmark.circle.fill", rect, green);
                 ui.add_space(3.0);
@@ -615,7 +639,7 @@ impl FileRuneApp {
                 ui.label(
                     RichText::new(err.clone())
                         .size(11.0)
-                        .color(Color32::from_rgb(220, 76, 62)),
+                        .color(crate::theme::GOLGARI.error),
                 );
             } else if !self.state.filter.is_empty() {
                 let suffix = if !self.state.is_searching {
@@ -666,7 +690,7 @@ impl FileRuneApp {
                 ui.label(
                     RichText::new(sc::HINTS)
                         .size(10.0)
-                        .color(ui.visuals().weak_text_color()),
+                        .color(crate::theme::GOLGARI.text_muted),
                 );
             });
         });
@@ -685,7 +709,7 @@ impl FileRuneApp {
                 RichText::new("FAVORITEN")
                     .size(10.0)
                     .strong()
-                    .color(ui.visuals().weak_text_color()),
+                    .color(crate::theme::GOLGARI.text_muted),
             );
         });
         ui.add_space(4.0);
@@ -766,7 +790,7 @@ impl FileRuneApp {
                     egui::Label::new(
                         RichText::new("⊕  Aktuellen Ordner sichern")
                             .size(10.0)
-                            .color(ui.visuals().weak_text_color()),
+                            .color(crate::theme::GOLGARI.text_muted),
                     )
                     .sense(Sense::click()),
                 );
@@ -869,7 +893,10 @@ impl FileRuneApp {
         let has_subtitle = subtitle.is_some();
         let painter = ui.painter();
         let text_color = ui.visuals().text_color();
-        let weak = ui.visuals().weak_text_color();
+        // Nicht weak_text_color: das ist bei Golgari #788c99 und hat auf der
+        // Liste nur 3,35:1 — für Datum und Größe in 11 pt zu wenig. Zed nimmt
+        // für Nebeninformationen selbst text.muted (#47545d, 7,5:1).
+        let weak = crate::theme::GOLGARI.text_muted;
 
         // Name (bei Suchtreffern oben, darunter der Ordner).
         let name_galley = galley_one_line(
@@ -894,7 +921,7 @@ impl FileRuneApp {
                 painter,
                 text,
                 egui::FontId::proportional(10.0),
-                if entry.matched_line.is_some() { self.accent } else { weak },
+                if entry.matched_line.is_some() { crate::theme::GOLGARI.secondary } else { weak },
                 name_width,
                 trim,
             );
@@ -1294,13 +1321,12 @@ fn galley_one_line(
     painter.layout_no_wrap(build(lo), font, color)
 }
 
-fn install_style(ctx: &egui::Context, accent: Color32) {
+/// Abstände und Schriftgrößen. Die Farben setzt `theme::apply`.
+fn install_style(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = Vec2::new(6.0, 3.0);
         style.spacing.button_padding = Vec2::new(8.0, 4.0);
         style.visuals.striped = false;
-        style.visuals.selection.bg_fill = accent;
-        style.visuals.hyperlink_color = accent;
         // macOS-Textgrößen: body 13, caption 11, caption2 10.
         style.text_styles.insert(
             egui::TextStyle::Body,

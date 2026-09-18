@@ -8,7 +8,7 @@
 #[cfg_attr(not(target_vendor = "apple"), path = "generic.rs")]
 mod backend;
 
-pub use backend::{install_fonts, system_accent, IconCache};
+pub use backend::{install_fonts, IconCache};
 
 /// Kantenlänge der Zeilensymbole in Punkten — das `.frame(width: 16, height: 16)`
 /// der SwiftUI-Zeile.

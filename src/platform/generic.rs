@@ -18,7 +18,8 @@ impl IconCache {
     pub fn draw_file_icon(&mut self, ui: &Ui, path: &std::path::Path, is_dir: bool, rect: Rect) {
         let p = ui.painter();
         if is_dir {
-            let blue = Color32::from_rgb(88, 160, 236);
+            // Golgari-Grün, im selben Ton wie der umgefärbte macOS-Ordner.
+            let blue = Color32::from_rgb(37, 132, 83);
             let r = rect.shrink2(Vec2::new(rect.width() * 0.06, rect.height() * 0.16));
             // Reiter
             let tab = Rect::from_min_size(
@@ -299,10 +300,4 @@ pub fn install_fonts(ctx: &Context) {
     if any {
         ctx.set_fonts(fonts);
     }
-}
-
-/// Ohne Systemquelle das Blau, das auch macOS voreingestellt hat — so sehen
-/// beide Fassungen gleich aus, solange der Nutzer nichts anderes eingestellt hat.
-pub fn system_accent() -> Color32 {
-    Color32::from_rgb(0, 122, 255)
 }

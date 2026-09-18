@@ -140,7 +140,73 @@ unsafe fn load_file_icon(
         generic_data_icon(&workspace)?
     };
 
-    rasterize(&image, false)
+    let mut img = rasterize(&image, false)?;
+    // Nur der generische Ordner wird umgefärbt. Pakete wie .app behalten ihr
+    // eigenes Symbol, und Dateisymbole ihre Typfarbe (PDF rot usw.).
+    if is_dir && ext.is_empty() {
+        recolor_folder(&mut img);
+    }
+    Some(img)
+}
+
+/// Färbt das blaue macOS-Ordnersymbol in Golgari-Grün um. Form, Kanten und
+/// Schattierung bleiben original — nur der Farbton wandert, und die Helligkeit
+/// wird auf „dunkelgrün" abgesenkt. Weiße Glanzlichter und graue Kanten bleiben
+/// unberührt, weil nur deutlich blaue Pixel angefasst werden.
+fn recolor_folder(img: &mut egui::ColorImage) {
+    /// Farbton von Golgari-Grün `#00773a`.
+    const HUE: f32 = 149.0;
+    for px in img.pixels.iter_mut() {
+        let [r, g, b, a] = px.to_srgba_unmultiplied();
+        if a == 0 {
+            continue;
+        }
+        let (h, sat, light) = rgb_to_hsl(r, g, b);
+        if !(170.0..=260.0).contains(&h) || sat < 0.15 {
+            continue;
+        }
+        // Die Helligkeitsspanne des Symbols (dunkler Rand bis heller Reiter)
+        // auf einen tieferen Bereich legen, damit es dunkelgrün wird, die
+        // Schattierung aber erhalten bleibt.
+        let (nr, ng, nb) = hsl_to_rgb(HUE, sat * 0.7, 0.12 + light * 0.32);
+        *px = egui::Color32::from_rgba_unmultiplied(nr, ng, nb, a);
+    }
+}
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h * 60.0, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h as u32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let to = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (to(r), to(g), to(b))
 }
 
 unsafe fn generic_data_icon(workspace: &NSWorkspace) -> Option<Retained<NSImage>> {
@@ -266,22 +332,4 @@ pub fn install_fonts(ctx: &egui::Context) {
     );
 
     ctx.set_fonts(fonts);
-}
-
-/// Die vom Nutzer in den Systemeinstellungen gewählte Akzentfarbe — dieselbe
-/// Quelle wie `Color.accentColor` in SwiftUI.
-pub fn system_accent() -> egui::Color32 {
-    let color = objc2_app_kit::NSColor::controlAccentColor();
-    // In den Gerätefarbraum wandeln, sonst wirft der Zugriff auf die einzelnen
-    // Komponenten bei Katalogfarben eine Ausnahme.
-    let Some(rgb) =
-        color.colorUsingColorSpace(&objc2_app_kit::NSColorSpace::deviceRGBColorSpace())
-    else {
-        return egui::Color32::from_rgb(0, 122, 255); // macOS-Blau
-    };
-    egui::Color32::from_rgb(
-        (rgb.redComponent() * 255.0).round() as u8,
-        (rgb.greenComponent() * 255.0).round() as u8,
-        (rgb.blueComponent() * 255.0).round() as u8,
-    )
 }

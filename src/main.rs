@@ -16,6 +16,7 @@ mod ops;
 mod scanner;
 mod search;
 mod state;
+mod theme;
 mod ui;
 
 /// Das App-Icon für Windows und Linux. Ohne gesetztes Icon legt eframe sein
